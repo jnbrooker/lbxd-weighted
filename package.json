@@ -1,0 +1,7 @@
+{
+  "name": "lbxd-weighted",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Chrome extension: advanced weighted rating stats on Letterboxd film pages",
+  "scripts": { "test": "node --test test/stats.test.js" }
+}
