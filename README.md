@@ -66,7 +66,7 @@ Pick anyone you follow (or yourself) and get the films to recommend to them.
 
 ## Top films · weighted
 
-A **Weighted** item next to Films / Lists / Members opens . It ranks
+A **Weighted** item next to Films / Lists / Members opens `letterboxd.com/films/#weighted`. It ranks
 Letterboxd's highest-rated or most popular films (top 100, 250 or 500) by the rater-normalised score instead of raw stars.
 Columns: personal rank, top-10% share, activity-weighted and Bayesian scores, plus each film's move vs the Letterboxd order.
 
@@ -81,7 +81,7 @@ A full run is slow (thousands of page loads), so it's built to be efficient:
 
 ## Member profiles
 
-Every profile () gets an **Advanced stats** panel. It reads about 200 of that member's
+Every profile (`/<username>/`) gets an **Advanced stats** panel. It reads about 200 of that member's
 rated films and each film's histogram:
 - **Expected vs actual** scatter. The expected rating is their own norm, shifted by how the crowd rates the film.
   The chart shows the y = x line and their trend line.
