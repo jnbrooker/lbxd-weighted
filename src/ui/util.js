@@ -54,7 +54,7 @@
       case 'actor': return `films with ${p.label}`;
       case 'theme': return `“${p.label}”`;
       case 'genre': return p.label.toLowerCase();
-      case 'language': return `${p.label}-language films`;
+      case 'language': return /no spoken/i.test(p.label) ? 'silent films' : `${p.label}-language films`;
       case 'country': return `films from ${p.label}`;
       case 'decade': return `${p.label} films`;
       case 'similar': return 'similar films';

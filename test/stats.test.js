@@ -166,3 +166,10 @@ test('alsoLoved surfaces films over-represented among fans', () => {
   assert.equal(out[0].slug, 'before-sunrise');
   assert.ok(out[0].lift > 3);
 });
+
+test('percentileAt interpolates between half stars', () => {
+  const c = [0, 0, 0, 0, 0, 10, 0, 0, 0, 10];
+  close(s.percentileAt(c, 3), 0.25);
+  close(s.percentileAt(c, 3.25), 0.375);
+  assert.ok(s.percentileAt(c, 4.9) > s.percentileAt(c, 4.6));
+});

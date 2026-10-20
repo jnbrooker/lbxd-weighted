@@ -34,6 +34,14 @@
     return (below + counts[i] / 2) / n;
   }
 
+  // Percentile of a continuous rating, interpolating between half-star mid-ranks.
+  function percentileAt(counts, r) {
+    const x = Math.min(5, Math.max(0.5, r));
+    const lo = Math.floor(x * 2) / 2, hi = Math.min(5, lo + 0.5);
+    const a = percentileOf(counts, lo), b = percentileOf(counts, hi);
+    return hi === lo ? a : a + (b - a) * ((x - lo) / 0.5);
+  }
+
   // Remove this film's own rating from the rater's histogram so their baseline
   // isn't contaminated by the rating we're judging (leave-one-out).
   function leaveOneOut(counts, r) {
@@ -253,7 +261,7 @@
       genreN: genre.reduce((s, p) => s + p.n, 0),
       similarAffinity: similar ? similar.raw : 0,
       similarN: similar ? similar.n : 0,
-      pct: percentileOf(counts, rounded), confidence,
+      pct: percentileAt(counts, rating), confidence,
     };
   }
 
@@ -335,7 +343,7 @@
   }
 
   const api = {
-    RATINGS, idxOf, histSummary, median, percentileOf, leaveOneOut, raterBaseline,
+    RATINGS, idxOf, histSummary, median, percentileOf, percentileAt, leaveOneOut, raterBaseline,
     pooledReference, activityWeight, weightedMean, allocateSample, bimodality, analyse,
     FACETS, personBaseline, affinity, crowdZFromAverage, predictRating, alsoLoved, tasteMatch, tasteFingerprint, segments,
   };

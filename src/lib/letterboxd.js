@@ -206,12 +206,14 @@
     const facets = [];
     const seen = new Set();
     const add = (type, path, label) => {
-      if (!path || path.endsWith('/') || seen.has(path)) return;
+      if (!path || path.endsWith('/') || seen.has(path)) return false;
       seen.add(path);
       facets.push({ type, path, label });
+      return true;
     };
     const after = (href, seg) => ((href || '').split(`/${seg}/`)[1] || '').split('/')[0];
-    const each = (sel, max, fn) => [...doc.querySelectorAll(sel)].slice(0, max).forEach(fn);
+    // fn returns true when it added a new facet; max counts unique facets.
+    const each = (sel, max, fn) => { let n = 0; for (const a of doc.querySelectorAll(sel)) { if (n >= max) break; if (fn(a)) n++; } };
 
     each('a[href^="/director/"]', 2, (a) => add('director', `with/director/${after(a.getAttribute('href'), 'director')}`, a.textContent.trim()));
     each('#tab-panel-genres a[href^="/films/theme/"]', 2, (a) => add('theme', `theme/${after(a.getAttribute('href'), 'theme')}`, a.textContent.trim()));
@@ -219,7 +221,7 @@
     const cast = doc.querySelectorAll('#tab-panel-cast a[href^="/actor/"]').length ? '#tab-panel-cast a[href^="/actor/"]' : 'a[href^="/actor/"]';
     each(cast, 3, (a) => add('actor', `with/actor/${after(a.getAttribute('href'), 'actor')}`, a.textContent.trim()));
     each('#tab-panel-details a[href^="/films/language/"]', 2, (a) => add('language', `language/${after(a.getAttribute('href'), 'language')}`, a.textContent.trim()));
-    each('#tab-panel-details a[href^="/films/country/"]', 1, (a) => add('country', `country/${after(a.getAttribute('href'), 'country')}`, a.textContent.trim()));
+    each('#tab-panel-details a[href^="/films/country/"]', 2, (a) => add('country', `country/${after(a.getAttribute('href'), 'country')}`, a.textContent.trim()));
     const year = parseInt(((doc.querySelector('meta[property="og:title"]')?.content || '').match(/\((\d{4})\)\s*$/) || [])[1], 10);
     if (year) add('decade', `decade/${Math.floor(year / 10) * 10}s`, `${Math.floor(year / 10) * 10}s`);
     return facets;

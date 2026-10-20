@@ -210,8 +210,8 @@
   // People who love this film (relative to their own taste) also love…
   async function fansAlsoLove(result, rand) {
     const sample = result.raters.filter((r) => r.source === 'sample' && r.n >= 50);
-    const fans = sample.filter((r) => r.pct >= 0.9 && r.rating >= 4).sort((a, b) => b.pct - a.pct).slice(0, 15);
-    const ctrl = pick(sample.filter((r) => r.pct >= 0.2 && r.pct <= 0.6), 15, rand);
+    const fans = sample.filter((r) => r.pct >= 0.9 && r.rating >= 4).sort((a, b) => b.pct - a.pct).slice(0, 25);
+    const ctrl = pick(sample.filter((r) => r.pct >= 0.2 && r.pct <= 0.6), 25, rand);
     const state = { status: 'loading', total: fans.length + ctrl.length, fans: fans.length };
     if (fans.length < 5) { state.status = 'done'; filmTab.renderAlsoLoved(panes.film, state, filmName); return; }
     filmTab.renderAlsoLoved(panes.film, state, filmName);
