@@ -68,7 +68,7 @@
   const parser = new DOMParser();
   let active = 0;
   const waiters = [];
-  const MAX_CONCURRENT = 4;
+  const MAX_CONCURRENT = 6;
   const GAP_MS = 120;
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -181,25 +181,76 @@
     })).filter((f) => f.user);
   }
 
-  // Film grid items carry `rated-N` where N is half-stars.
-  function parseGridRatings(doc) {
+  // Film grid items carry `rated-N` where N is half-stars (absent when unrated).
+  function parseGridFilms(doc) {
     return [...doc.querySelectorAll('.griditem')].map((li) => {
-      const slug = li.querySelector('[data-item-slug]')?.dataset.itemSlug;
+      const item = li.querySelector('[data-item-slug]');
+      if (!item) return null;
       const m = (li.querySelector('.rating')?.className || '').match(/rated-(\d+)/);
-      return slug && m ? { slug, rating: parseInt(m[1], 10) / 2 } : null;
+      return { slug: item.dataset.itemSlug, name: item.dataset.itemName || item.dataset.itemSlug, rating: m ? parseInt(m[1], 10) / 2 : null };
     }).filter(Boolean);
   }
+  const parseGridRatings = (doc) => parseGridFilms(doc).filter((f) => f.rating != null);
 
-  async function getFollowing(user, maxFriends) {
-    return cached(`following:${user}:${maxFriends}`, DAY, async () => {
+  function parseSimilar(doc, selfSlug) {
+    const seen = new Set([selfSlug]);
+    return [...doc.querySelectorAll('.griditem [data-item-slug], li.poster-container [data-item-slug]')]
+      .map((e) => ({ slug: e.dataset.itemSlug, name: e.dataset.itemName || e.dataset.itemSlug }))
+      .filter((f) => f.slug && !seen.has(f.slug) && seen.add(f.slug));
+  }
+
+  // Everything about a film that a person's taste can be measured against.
+  // Each facet's `path` is a filter that also works on a user's films:
+  // /<user>/films/<path>/ (mini-themes don't, so they're skipped).
+  function parseFacets(doc) {
+    const facets = [];
+    const seen = new Set();
+    const add = (type, path, label) => {
+      if (!path || path.endsWith('/') || seen.has(path)) return;
+      seen.add(path);
+      facets.push({ type, path, label });
+    };
+    const after = (href, seg) => ((href || '').split(`/${seg}/`)[1] || '').split('/')[0];
+    const each = (sel, max, fn) => [...doc.querySelectorAll(sel)].slice(0, max).forEach(fn);
+
+    each('a[href^="/director/"]', 2, (a) => add('director', `with/director/${after(a.getAttribute('href'), 'director')}`, a.textContent.trim()));
+    each('#tab-panel-genres a[href^="/films/theme/"]', 2, (a) => add('theme', `theme/${after(a.getAttribute('href'), 'theme')}`, a.textContent.trim()));
+    each('#tab-panel-genres a[href^="/films/genre/"]', 3, (a) => add('genre', `genre/${after(a.getAttribute('href'), 'genre')}`, a.textContent.trim()));
+    const cast = doc.querySelectorAll('#tab-panel-cast a[href^="/actor/"]').length ? '#tab-panel-cast a[href^="/actor/"]' : 'a[href^="/actor/"]';
+    each(cast, 3, (a) => add('actor', `with/actor/${after(a.getAttribute('href'), 'actor')}`, a.textContent.trim()));
+    each('#tab-panel-details a[href^="/films/language/"]', 2, (a) => add('language', `language/${after(a.getAttribute('href'), 'language')}`, a.textContent.trim()));
+    each('#tab-panel-details a[href^="/films/country/"]', 1, (a) => add('country', `country/${after(a.getAttribute('href'), 'country')}`, a.textContent.trim()));
+    const year = parseInt(((doc.querySelector('meta[property="og:title"]')?.content || '').match(/\((\d{4})\)\s*$/) || [])[1], 10);
+    if (year) add('decade', `decade/${Math.floor(year / 10) * 10}s`, `${Math.floor(year / 10) * 10}s`);
+    return facets;
+  }
+
+  function parseFilmInfo(doc, slug) {
+    const meta = (n) => doc.querySelector(`meta[name="${n}"], meta[property="${n}"]`)?.content || '';
+    const avg = parseFloat(meta('twitter:data2'));
+    const title = meta('og:title') || slug;
+    return {
+      slug,
+      name: title,
+      year: parseInt((title.match(/\((\d{4})\)\s*$/) || [])[1], 10) || null,
+      director: meta('twitter:data1'),
+      avg: Number.isFinite(avg) ? avg : NaN,
+      genres: parseFilmGenres(doc),
+      facets: parseFacets(doc),
+    };
+  }
+
+  // kind: 'following' | 'followers'. 25 people per page.
+  async function getFollowList(user, kind, max) {
+    return cached(`${kind}:${user}:${max}`, DAY, async () => {
       const out = [];
-      for (let p = 1; out.length < maxFriends && p <= 20; p++) {
-        const doc = await fetchDoc(`/${user}/following/${p > 1 ? `page/${p}/` : ''}`);
+      for (let p = 1; out.length < max && p <= Math.ceil(max / 25); p++) {
+        const doc = await fetchDoc(`/${user}/${kind}/${p > 1 ? `page/${p}/` : ''}`);
         const batch = parseFollowing(doc);
         out.push(...batch);
-        if (!doc.querySelector('.pagination a.next')) break;
+        if (!batch.length || !doc.querySelector('.pagination a.next')) break;
       }
-      return out.slice(0, maxFriends);
+      return out.slice(0, max);
     });
   }
 
@@ -214,24 +265,87 @@
     });
   }
 
-  // The user's ratings of films in the same genre(s): the combined genres first,
-  // then the primary genre alone if the combination is too thin.
-  async function getUserGenreRatings(user, genres) {
-    if (!genres.length) return [];
-    const key = genres.slice(0, 2).join('+');
-    return cached(`genre:${user}:${key}`, 7 * DAY, async () => {
-      let rated = parseGridRatings(await fetchDoc(`/${user}/films/genre/${key}/`));
-      if (rated.length < 10 && genres.length > 1) {
-        rated = parseGridRatings(await fetchDoc(`/${user}/films/genre/${genres[0]}/`));
+  const GENRES = [
+    'action', 'adventure', 'animation', 'comedy', 'crime', 'documentary', 'drama', 'family', 'fantasy',
+    'history', 'horror', 'music', 'mystery', 'romance', 'science-fiction', 'thriller', 'tv-movie', 'war', 'western',
+  ];
+  const DECADES = ['1920s', '1930s', '1940s', '1950s', '1960s', '1970s', '1980s', '1990s', '2000s', '2010s', '2020s'];
+
+  async function getSimilar(slug, limit = 40) {
+    return cached(`similar:${slug}`, 7 * DAY, async () =>
+      parseSimilar(await fetchDoc(`/film/${slug}/similar/`), slug).slice(0, limit)
+    );
+  }
+
+  async function getFilmInfo(slug) {
+    return cached(`film:${slug}`, 7 * DAY, async () => parseFilmInfo(await fetchDoc(`/film/${slug}/`), slug));
+  }
+
+  // Their highest-rated films (first page, up to 72).
+  async function getUserTopRated(user) {
+    return cached(`top:${user}`, 2 * DAY, async () => parseGridRatings(await fetchDoc(`/${user}/films/by/entry-rating/`)));
+  }
+
+  // First page (72 most recent) of a user's films matching a facet path, rated or
+  // not, so it doubles as a partial "already seen" list.
+  async function getUserFacet(user, path) {
+    return cached(`facet:${user}:${path}`, 7 * DAY, async () => {
+      try {
+        const doc = await fetchDoc(`/${user}/films/${path}/`, { allow404: true });
+        return doc ? parseGridFilms(doc) : [];
+      } catch (_) {
+        return [];
       }
-      return rated;
     });
   }
 
+  // Broad taste profile: every genre and decade. { 'genre/drama': [films], ... }
+  async function getUserBroadProfile(user, onStep) {
+    const paths = [...GENRES.map((g) => `genre/${g}`), ...DECADES.map((d) => `decade/${d}`)];
+    const out = {};
+    await Promise.all(paths.map(async (p) => {
+      out[p] = await getUserFacet(user, p);
+      onStep && onStep(paths.length);
+    }));
+    return out;
+  }
+
+  // Facet ratings for one person against one film's facets (+ its similar films).
+  // `lean` skips the near-universal English/USA/UK facets to save requests.
+  async function getUserFacetRatings(user, facets, { excludeSlug, similar = [], lean = false } = {}) {
+    const wanted = facets.filter((f) => !(lean && /^(language\/english|country\/usa|country\/uk)$/.test(f.path)));
+    const lists = await Promise.all(wanted.map((f) => getUserFacet(user, f.path)));
+    const similarSet = new Set(similar.map((s) => s.slug));
+    const seenFilms = new Map();
+    const out = wanted.map((f, i) => {
+      const films = lists[i].filter((x) => x.slug !== excludeSlug);
+      films.forEach((x) => seenFilms.set(x.slug, x));
+      const rated = films.filter((x) => x.rating != null);
+      return { ...f, ratings: rated.map((x) => x.rating), films: rated };
+    });
+    const simRated = [...seenFilms.values()].filter((x) => x.rating != null && similarSet.has(x.slug));
+    if (simRated.length) out.push({ type: 'similar', path: 'similar', label: 'similar films', ratings: simRated.map((x) => x.rating), films: simRated });
+    return out;
+  }
+
+  // Everyone the user follows, with mutuals (they follow back) first.
+  async function getFriends(user, maxFriends) {
+    const [following, followers] = await Promise.all([
+      getFollowList(user, 'following', maxFriends),
+      getFollowList(user, 'followers', 500).catch(() => []),
+    ]);
+    const back = new Set(followers.map((f) => f.user));
+    return following
+      .map((f, i) => ({ ...f, mutual: back.has(f.user), order: i }))
+      .sort((a, b) => b.mutual - a.mutual || a.order - b.order);
+  }
+
   LBW.lb = {
+    GENRES, DECADES,
     parseHistogram, parseWeightedAverage, parseStars, parseRatedUsers, parseReviews, parseProfile,
-    detectUsername, parseFilmGenres, parseFollowing, parseGridRatings,
+    detectUsername, parseFilmGenres, parseFollowing, parseGridFilms, parseGridRatings, parseSimilar, parseFacets, parseFilmInfo,
     getFilmHistogram, getUsersInBucket, getPopularReviews, getProfile,
-    getFollowing, getUserFilmRating, getUserGenreRatings, clearCache, cached, DAY,
+    getFollowList, getFriends, getUserFilmRating, getSimilar, getFilmInfo, getUserTopRated,
+    getUserFacet, getUserBroadProfile, getUserFacetRatings, clearCache, cached, DAY,
   };
 })(globalThis);

@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Letterboxd Weighted Stats",
-  "version": "0.1.0",
-  "description": "Advanced rating stats on Letterboxd film pages: rater-normalised scores, personal-percentile ranks and out-of-character ratings.",
+  "version": "0.2.0",
+  "description": "Advanced Letterboxd stats: rater-normalised scores, taste-aware out-of-character ratings, friend predictions and recommendations.",
   "permissions": [
     "storage"
   ],
@@ -17,6 +17,11 @@
       "js": [
         "src/lib/stats.js",
         "src/lib/letterboxd.js",
+        "src/lib/recommend.js",
+        "src/ui/util.js",
+        "src/ui/film-tab.js",
+        "src/ui/friends-tab.js",
+        "src/ui/foryou-tab.js",
         "src/content.js"
       ],
       "css": [

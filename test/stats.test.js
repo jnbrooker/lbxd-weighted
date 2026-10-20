@@ -84,7 +84,7 @@ test('analyse flags out-of-character ratings once per user', () => {
 
 test('predictRating: crowd loves it relative to norms -> above friend average', () => {
   const friend = [2, 4, 8, 15, 25, 40, 40, 30, 15, 6]; // avg ~3.3
-  const p = s.predictRating(friend, [], 1.0, { mean: 3.3, sd: 1 });
+  const p = s.predictRating(friend, { crowdZ: 1.0, ref: { mean: 3.3, sd: 1 } });
   assert.ok(p.rating > p.mean + 0.5, `${p.rating} vs ${p.mean}`);
   assert.ok(p.pct > 0.7);
 });
@@ -92,21 +92,77 @@ test('predictRating: crowd loves it relative to norms -> above friend average', 
 test('predictRating: genre affinity moves the prediction', () => {
   const friend = [2, 4, 8, 15, 25, 40, 40, 30, 15, 6];
   const ref = { mean: 3.3, sd: 1 };
-  const base = s.predictRating(friend, [], 0, ref);
-  const fan = s.predictRating(friend, Array(30).fill(4.5), 0, ref);
-  const hater = s.predictRating(friend, Array(30).fill(1.5), 0, ref);
+  const base = s.predictRating(friend, { crowdZ: 0, ref });
+  const fan = s.predictRating(friend, { genreRatings: Array(30).fill(4.5), crowdZ: 0, ref });
+  const hater = s.predictRating(friend, { genreRatings: Array(30).fill(1.5), crowdZ: 0, ref });
   assert.ok(fan.rating > base.rating + 0.5);
   assert.ok(hater.rating < base.rating - 0.5);
   assert.equal(fan.confidence, 'medium'); // 185 ratings < 200
-  assert.equal(s.predictRating(friend.map((c) => c * 2), Array(30).fill(4.5), 0, ref).confidence, 'high');
+  assert.equal(s.predictRating(friend.map((c) => c * 2), { genreRatings: Array(30).fill(4.5), crowdZ: 0, ref }).confidence, 'high');
 });
 
 test('predictRating: few genre films barely move it, and output is clamped', () => {
   const friend = [0, 0, 0, 0, 0, 0, 0, 5, 20, 80];
   const ref = { mean: 3.3, sd: 1 };
-  const a = s.predictRating(friend, [], 0, ref);
-  const b = s.predictRating(friend, [0.5], 0, ref);
+  const a = s.predictRating(friend, { crowdZ: 0, ref });
+  const b = s.predictRating(friend, { genreRatings: [0.5], crowdZ: 0, ref });
   assert.ok(Math.abs(a.rating - b.rating) < 0.4);
-  assert.ok(s.predictRating(friend, [], 5, ref).rating <= 5);
-  assert.equal(s.predictRating(friend, [], NaN, ref), null);
+  assert.ok(s.predictRating(friend, { crowdZ: 5, ref }).rating <= 5);
+  assert.equal(s.predictRating(friend, { crowdZ: NaN, ref }), null);
+});
+
+test('predictRating: similar-film ratings outweigh genre', () => {
+  const friend = [4, 8, 16, 30, 50, 80, 80, 60, 30, 12];
+  const ref = { mean: 3.3, sd: 1 };
+  const p = s.predictRating(friend, { genreRatings: Array(20).fill(2), similarRatings: [5, 5, 4.5], crowdZ: 0, ref });
+  assert.ok(p.rating > p.mean, `${p.rating} vs ${p.mean}`);
+});
+
+test('tasteMatch: aligned vs opposed tastes', () => {
+  const base = { mean: 3, sd: 1 };
+  const films = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j'];
+  const A = new Map(films.map((f, i) => [f, 1 + (i % 5)]));
+  const same = new Map(films.map((f, i) => [f, 1 + (i % 5)]));
+  const opp = new Map(films.map((f, i) => [f, 5 - (i % 5)]));
+  assert.ok(s.tasteMatch(A, base, same, base).r > 0.45);
+  assert.ok(s.tasteMatch(A, base, opp, base).r < -0.45);
+  assert.equal(s.tasteMatch(A, base, new Map([['a', 3]]), base).r, 0);
+});
+
+test('crowdZFromAverage is centred near 3.6', () => {
+  assert.ok(Math.abs(s.crowdZFromAverage(3.61)) < 1e-9);
+  assert.ok(s.crowdZFromAverage(4.5) > 0.8);
+});
+
+test('segments splits harsh vs generous raters', () => {
+  const mk = (rawMean, n, rating) => ({ source: 'sample', n, rawMean, rating, delta: rating - rawMean, weight: 1 });
+  const seg = s.segments([mk(2.5, 50, 4), mk(2.6, 60, 4), mk(2.7, 70, 4), mk(4, 2000, 5), mk(4.1, 1500, 5), mk(4.2, 1200, 5)]);
+  assert.equal(seg.find((x) => x.label.startsWith('Harsh')).mean, 4);
+  assert.equal(seg.find((x) => x.label.startsWith('Cinephiles')).n, 3);
+});
+
+test('predictRating: facets combine and report their contributions', () => {
+  const friend = [4, 8, 16, 30, 50, 80, 80, 60, 30, 12];
+  const ref = { mean: 3.3, sd: 1 };
+  const p = s.predictRating(friend, {
+    crowdZ: 0, ref,
+    facets: [
+      { type: 'director', label: 'Celine Song', ratings: [5, 5] },
+      { type: 'language', label: 'Korean', ratings: [4.5, 4, 4.5, 5, 4] },
+      { type: 'decade', label: '2020s', ratings: Array(40).fill(3) },
+    ],
+  });
+  assert.equal(p.parts[0].type, 'director');
+  assert.ok(p.parts[0].contribution > 0);
+  assert.ok(p.rating > p.mean + 0.4);
+});
+
+test('alsoLoved surfaces films over-represented among fans', () => {
+  const godfather = { slug: 'godfather', name: 'The Godfather', rating: 5 };
+  const niche = { slug: 'before-sunrise', name: 'Before Sunrise', rating: 5 };
+  const fans = Array.from({ length: 10 }, (_, i) => (i < 6 ? [godfather, niche] : [godfather]));
+  const ctrl = Array.from({ length: 10 }, () => [godfather]);
+  const out = s.alsoLoved(fans, ctrl);
+  assert.equal(out[0].slug, 'before-sunrise');
+  assert.ok(out[0].lift > 3);
 });

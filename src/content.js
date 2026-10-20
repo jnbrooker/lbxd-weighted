@@ -1,56 +1,23 @@
 // Entry point: runs on letterboxd.com/film/<slug>/ and injects the dashboard.
 (function () {
-  const { stats, lb } = globalThis.LBW;
+  const { stats, lb, ui, filmTab, friendsTab, forYouTab, recommend } = globalThis.LBW;
+  const { esc, hash, rng, pick, waitFor } = ui;
 
   const parts = location.pathname.split('/').filter(Boolean);
   if (parts[0] !== 'film' || parts.length !== 2) return; // main film page only
   const slug = parts[1];
 
-  const DEFAULTS = { sampleSize: 120, zThreshold: 2, reviewPages: 2, profileTtlDays: 14, autoRun: true, username: '', maxFriends: 40, friends: true };
+  const DEFAULTS = {
+    sampleSize: 300, zThreshold: 1.75, reviewPages: 2, profileTtlDays: 14, autoRun: true,
+    username: '', friends: true, maxFriends: 500, friendBatch: 40, tasteChecks: 15,
+  };
 
-  // ---------- small utils ----------
+  const filmName = (document.querySelector('meta[property="og:title"]')?.content || slug).replace(/\s*\(\d{4}\)\s*$/, '');
+  const ctx = { slug, filmName, facets: lb.parseFacets(document), similar: [], alsoLoved: null, meanZ: NaN, ref: null };
+  let settings = { ...DEFAULTS };
+  let me = null;
 
-  const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-  const fmt = (v, d = 2) => (Number.isFinite(v) ? v.toFixed(d) : '—');
-  const signed = (v, d = 2) => (Number.isFinite(v) ? (v > 0 ? '+' : v < 0 ? '−' : '±') + Math.abs(v).toFixed(d) : '—');
-  const pct = (v, d = 0) => (Number.isFinite(v) ? (v * 100).toFixed(d) + '%' : '—');
-  const stars = (r) => (Number.isFinite(r) ? '★'.repeat(Math.floor(r)) + (r % 1 ? '½' : '') : '—');
-
-  function hash(str) {
-    let h = 2166136261;
-    for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619); }
-    return h >>> 0;
-  }
-  function rng(seed) {
-    let a = seed >>> 0;
-    return () => {
-      a |= 0; a = (a + 0x6d2b79f5) | 0;
-      let t = Math.imul(a ^ (a >>> 15), 1 | a);
-      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-    };
-  }
-  function pick(arr, k, rand) {
-    const a = arr.slice();
-    for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(rand() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; }
-    return a.slice(0, k);
-  }
-
-  function waitFor(selectors, timeout = 6000) {
-    return new Promise((resolve) => {
-      const find = () => selectors.map((s) => document.querySelector(s)).find(Boolean);
-      const hit = find();
-      if (hit) return resolve(hit);
-      const obs = new MutationObserver(() => {
-        const el = find();
-        if (el) { obs.disconnect(); resolve(el); }
-      });
-      obs.observe(document.documentElement, { childList: true, subtree: true });
-      setTimeout(() => { obs.disconnect(); resolve(find() || null); }, timeout);
-    });
-  }
-
-  // ---------- panel shell ----------
+  // ---------- shell ----------
 
   const panel = document.createElement('section');
   panel.id = 'lbw-panel';
@@ -66,23 +33,22 @@
         <button type="button" class="lbw-btn -ghost" data-act="toggle" aria-expanded="true" title="Collapse">–</button>
       </div>
     </header>
+    <nav class="lbw-tabs" role="tablist">
+      <button type="button" role="tab" data-tab="film" aria-selected="true">Film stats</button>
+      <button type="button" role="tab" data-tab="friends" aria-selected="false">Friends</button>
+      <button type="button" role="tab" data-tab="foryou" aria-selected="false">For a friend</button>
+    </nav>
     <div class="lbw-progress" hidden><div class="lbw-bar"></div><span class="lbw-progress-label"></span></div>
-    <div class="lbw-body"><p class="lbw-empty">Click <strong>Analyse</strong> to sample this film's raters.</p></div>
-    <div class="lbw-friends" hidden></div>
+    <div class="lbw-tabpanel" data-panel="film"><p class="lbw-empty">Click <strong>Analyse</strong> to sample this film's raters.</p></div>
+    <div class="lbw-tabpanel" data-panel="friends" hidden></div>
+    <div class="lbw-tabpanel" data-panel="foryou" hidden></div>
   `;
-  const body = panel.querySelector('.lbw-body');
+  const panes = {
+    film: panel.querySelector('[data-panel="film"]'),
+    friends: panel.querySelector('[data-panel="friends"]'),
+    foryou: panel.querySelector('[data-panel="foryou"]'),
+  };
   const progress = panel.querySelector('.lbw-progress');
-
-  panel.addEventListener('click', (e) => {
-    const act = e.target.closest('[data-act]')?.dataset.act;
-    if (act === 'run') run(true);
-    if (act === 'toggle') {
-      const collapsed = panel.classList.toggle('-collapsed');
-      e.target.textContent = collapsed ? '+' : '–';
-      e.target.setAttribute('aria-expanded', String(!collapsed));
-      try { chrome.storage.local.set({ 'ui:collapsed': collapsed }); } catch (_) {}
-    }
-  });
 
   function setProgress(done, total, label) {
     progress.hidden = total === 0 || done >= total;
@@ -90,153 +56,35 @@
     progress.querySelector('.lbw-progress-label').textContent = label || `${done} / ${total} profiles`;
   }
 
-  // ---------- rendering ----------
-
-  function tile(label, value, note, help, accent) {
-    return `<div class="lbw-tile${accent ? ' -accent' : ''}" title="${esc(help)}">
-      <div class="lbw-tile-label">${esc(label)}</div>
-      <div class="lbw-tile-value">${value}</div>
-      <div class="lbw-tile-note">${note}</div>
-    </div>`;
+  function showTab(name) {
+    panel.querySelectorAll('[data-tab]').forEach((b) => b.setAttribute('aria-selected', String(b.dataset.tab === name)));
+    Object.entries(panes).forEach(([k, el]) => { el.hidden = k !== name; });
+    try { chrome.storage.local.set({ 'ui:tab': name }); } catch (_) {}
+    if (name === 'foryou') ensureForYou();
   }
 
-  function polarisationLabel(film) {
-    if (!Number.isFinite(film.sd)) return '—';
-    if (film.bimodality > 0.555 && film.sd > 1.1) return 'Divisive';
-    if (film.sd > 1.15) return 'Mixed';
-    if (film.sd < 0.75) return 'Consensus';
-    return 'Typical spread';
-  }
+  panel.addEventListener('click', (e) => {
+    const tab = e.target.closest('[data-tab]')?.dataset.tab;
+    if (tab) return showTab(tab);
+    const act = e.target.closest('[data-act]')?.dataset.act;
+    if (act === 'run') run(true);
+    if (act === 'more-friends') predictFriends();
+    if (act === 'run-foryou') runForYou();
+    if (act === 'toggle') {
+      const collapsed = panel.classList.toggle('-collapsed');
+      e.target.textContent = collapsed ? '+' : '–';
+      e.target.setAttribute('aria-expanded', String(!collapsed));
+      try { chrome.storage.local.set({ 'ui:collapsed': collapsed }); } catch (_) {}
+    }
+  });
+  panel.addEventListener('change', (e) => {
+    if (e.target.matches('[data-act="pick-friend"]')) forYou.selected = e.target.value;
+  });
 
-  function deviationChart(raters, flaggedUsers) {
-    const W = 640, H = 170, padX = 28, top = 14, bottom = 30;
-    const lo = -4, hi = 4;
-    const x = (d) => padX + ((Math.max(lo, Math.min(hi, d)) - lo) / (hi - lo)) * (W - 2 * padX);
-    const plotH = H - top - bottom;
-    const ticks = [-4, -3, -2, -1, 0, 1, 2, 3, 4];
-
-    // Beeswarm: place each dot at the free offset nearest the centre line.
-    const R = 4.5, D = 2 * R + 1, mid = top + plotH / 2, maxOff = plotH / 2 - R;
-    const placed = [];
-    const ys = new Map();
-    raters.slice().sort((p, q) => p.delta - q.delta).forEach((r) => {
-      const cx = x(r.delta);
-      const near = placed.filter((p) => Math.abs(p.cx - cx) < D);
-      let y = mid;
-      for (let k = 0; k < 200; k++) {
-        const off = Math.ceil(k / 2) * (D / 2) * (k % 2 ? -1 : 1);
-        const cand = mid + Math.max(-maxOff, Math.min(maxOff, off));
-        if (near.every((p) => (p.cx - cx) ** 2 + (p.y - cand) ** 2 >= D * D)) { y = cand; break; }
-      }
-      placed.push({ cx, y });
-      ys.set(r, y);
-    });
-
-    const dots = raters.map((r) => {
-      const jy = ys.get(r);
-      const cls = r.delta > 0.25 ? '-up' : r.delta < -0.25 ? '-down' : '-flat';
-      const ring = flaggedUsers.has(r.user) ? ' -flag' : '';
-      const tip = `${r.name || r.user}: gave ${stars(r.rating)} · usually ${fmt(r.rawMean)} (${r.n} ratings) · ${signed(r.delta)}★ · z ${signed(r.z, 1)}`;
-      return `<g class="lbw-dot ${cls}${ring}" data-tip="${esc(tip)}">
-        <circle class="hit" cx="${x(r.delta).toFixed(1)}" cy="${jy.toFixed(1)}" r="9"></circle>
-        <circle class="mark" cx="${x(r.delta).toFixed(1)}" cy="${jy.toFixed(1)}" r="4.5"></circle>
-      </g>`;
-    }).join('');
-
-    return `
-      <figure class="lbw-chart">
-        <figcaption>
-          <span>Each dot is a rater: how far this rating sits from their own average</span>
-          <span class="lbw-legend"><i class="-down"></i>below their norm <i class="-flat"></i>about usual <i class="-up"></i>above their norm <i class="-ring"></i>out of character</span>
-        </figcaption>
-        <div class="lbw-chart-wrap">
-          <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Distribution of rating deviations from each rater's personal average">
-            ${ticks.map((t) => `<line class="grid${t === 0 ? ' -zero' : ''}" x1="${x(t)}" x2="${x(t)}" y1="${top}" y2="${H - bottom}"></line>
-              <text class="tick" x="${x(t)}" y="${H - bottom + 16}">${t === 0 ? '0' : signed(t, 0) + '★'}</text>`).join('')}
-            ${dots}
-          </svg>
-          <div class="lbw-tip" hidden></div>
-        </div>
-      </figure>`;
-  }
-
-  function flaggedList(flagged, title, empty) {
-    if (!flagged.length) return `<div class="lbw-flags"><h3>${esc(title)}</h3><p class="lbw-muted">${esc(empty)}</p></div>`;
-    return `<div class="lbw-flags"><h3>${esc(title)}</h3><ol>${flagged.slice(0, 8).map((r) => {
-      const link = r.link || `/${r.user}/film/${slug}/`;
-      const share = (v) => (v < 0.01 ? '<1%' : pct(v));
-      const where = r.pct >= 0.5 ? `top ${share(1 - r.pct)}` : `bottom ${share(r.pct)}`;
-      return `<li>
-        <a class="lbw-user" href="${esc(link)}">${esc(r.name || r.user)}</a>
-        ${r.source === 'review' ? '<span class="lbw-chip">review</span>' : ''}
-        ${r.contrarian ? '<span class="lbw-chip -contra" title="Also far from the crowd average">contrarian</span>' : ''}
-        <div class="lbw-flag-line">
-          <span class="lbw-stars">${stars(r.rating)}</span>
-          <span class="lbw-muted">usually ${fmt(r.rawMean)} · ${where} of their ${r.n} ratings · z ${signed(r.z, 1)}</span>
-        </div>
-        ${r.excerpt ? `<p class="lbw-excerpt">${esc(r.excerpt)}${r.excerpt.length >= 220 ? '…' : ''}</p>` : ''}
-      </li>`;
-    }).join('')}</ol></div>`;
-  }
-
-  function render(result, meta) {
-    const a = result;
-    const f = a.film;
-    const flaggedUsers = new Set(a.flagged.map((r) => r.user));
-    const loved = a.flagged.filter((r) => r.z > 0);
-    const hated = a.flagged.filter((r) => r.z < 0);
-
-    body.innerHTML = `
-      <div class="lbw-tiles">
-        ${tile('Letterboxd', fmt(meta.weightedAverage), `${f.n.toLocaleString()} ratings`, "Letterboxd's own weighted average (their weighting formula is not public).")}
-        ${tile('Raw mean', fmt(f.mean), `median ${stars(f.median)}`, 'Plain unweighted mean of every rating in the histogram.')}
-        ${tile('Activity-weighted', fmt(a.activityWeighted), 'new accounts count less', 'Population-weighted sample mean where each rater counts by log(ratings), reaching full weight at 300 ratings.')}
-        ${tile('Normalised', fmt(a.normalised), `z ${signed(a.meanZ)}`, "Each rating converted to a z-score against the rater's own history, averaged, then mapped back onto the pooled rating scale. Corrects for harsh and generous raters.", true)}
-        ${tile('Vs their norm', signed(a.meanDelta) + '★', 'avg rating − rater avg', "On average, how many stars above or below their personal average raters scored this film.", true)}
-        ${tile('Personal rank', pct(a.meanPct), 'avg percentile', "Where this film sits within each rater's own ratings (50% = an ordinary film for them).", true)}
-      </div>
-      <div class="lbw-strip">
-        <span><strong>${pct(a.favouriteShare)}</strong> put it in their top 10%</span>
-        <span><strong>${pct(a.dislikeShare)}</strong> in their bottom 10%</span>
-        <span title="Standard deviation ${fmt(f.sd)}; bimodality coefficient ${fmt(f.bimodality)}"><strong>${polarisationLabel(f)}</strong> · sd ${fmt(f.sd)}</span>
-        <span title="Share of sampled raters with fewer than 50 ratings"><strong>${pct(a.lowActivityShare)}</strong> low-activity raters</span>
-      </div>
-      ${deviationChart(a.raters, flaggedUsers)}
-      <div class="lbw-flag-cols">
-        ${flaggedList(loved, 'Loved it, against type', 'No unusually generous ratings in the sample.')}
-        ${flaggedList(hated, 'Hated it, against type', 'No unusually harsh ratings in the sample.')}
-      </div>
-      <details class="lbw-method">
-        <summary>How this is calculated</summary>
-        <p>${a.sampleSize} raters sampled across all ten star buckets in proportion to the histogram (minimum 4 per bucket), each weighted back to its bucket's true size, plus raters from the top ${meta.reviewPages * 12} popular reviews (used for flags only). Each rater's personal histogram is read from their profile, with this film's rating removed. Thin accounts are shrunk toward the pooled average (μ ${fmt(a.ref.mean)}, σ ${fmt(a.ref.sd)}). A rating is flagged when it is ${meta.zThreshold}+ standard deviations from that rater's own average (raters with 25+ ratings only).</p>
-        <p class="lbw-muted">${meta.partial ? 'Still loading — numbers will settle.' : `Sampled ${new Date(meta.at).toLocaleString()}. Profiles cached for ${meta.profileTtlDays} days.`}</p>
-      </details>
-    `;
-    wireTooltip();
-  }
-
-  function wireTooltip() {
-    const wrap = body.querySelector('.lbw-chart-wrap');
-    const tip = wrap?.querySelector('.lbw-tip');
-    if (!wrap) return;
-    const show = (e) => {
-      const g = e.target.closest('.lbw-dot');
-      if (!g) { tip.hidden = true; return; }
-      const rect = wrap.getBoundingClientRect();
-      const c = g.querySelector('.mark').getBoundingClientRect();
-      tip.textContent = g.dataset.tip;
-      tip.hidden = false;
-      const left = Math.min(rect.width - tip.offsetWidth - 4, Math.max(4, c.left - rect.left - tip.offsetWidth / 2));
-      tip.style.left = `${left}px`;
-      tip.style.top = `${c.top - rect.top - tip.offsetHeight - 8}px`;
-    };
-    wrap.addEventListener('mouseover', show);
-    wrap.addEventListener('mouseleave', () => { tip.hidden = true; });
-  }
-
-  // ---------- orchestration ----------
+  // ---------- film stats ----------
 
   let running = false;
+  let flagState = null;
 
   async function run(reseed) {
     if (running) return;
@@ -245,11 +93,10 @@
     btn.disabled = true;
     btn.textContent = 'Analysing…';
     try {
-      const settings = { ...DEFAULTS, ...(await chrome.storage.sync.get(DEFAULTS)) };
       setProgress(0, 1, 'Reading rating histogram…');
       const film = await lb.getFilmHistogram(slug);
       if (!film.counts || !film.counts.some(Boolean)) {
-        body.innerHTML = '<p class="lbw-empty">This film has no ratings yet.</p>';
+        panes.film.innerHTML = '<p class="lbw-empty">This film has no ratings yet.</p>';
         setProgress(0, 0);
         return;
       }
@@ -267,9 +114,11 @@
       setProgress(0, 1, 'Sampling raters…');
       const alloc = stats.allocateSample(film.counts, settings.sampleSize);
       const entries = [];
-      const bucketLists = await Promise.all(
-        stats.RATINGS.map((r, i) => (alloc[i] ? lb.getUsersInBucket(slug, r).catch(() => []) : Promise.resolve([])))
-      );
+      const [bucketLists, similar] = await Promise.all([
+        Promise.all(stats.RATINGS.map((r, i) => (alloc[i] ? lb.getUsersInBucket(slug, r).catch(() => []) : Promise.resolve([])))),
+        lb.getSimilar(slug).catch(() => []),
+      ]);
+      ctx.similar = similar;
       bucketLists.forEach((users, i) => {
         const chosen = pick(users, alloc[i], rand);
         const weight = chosen.length ? film.counts[i] / chosen.length : 0;
@@ -291,7 +140,7 @@
           .map((e) => ({ ...e, counts: profiles.get(e.user).counts, name: e.name || profiles.get(e.user).name }));
         if (!raters.length) return null;
         const result = stats.analyse(film.counts, raters, settings);
-        render(result, meta);
+        filmTab.render(panes.film, result, meta);
         return result;
       };
 
@@ -300,17 +149,27 @@
         profiles.set(u, await lb.getProfile(u, settings.profileTtlDays));
         done++;
         setProgress(done, users.length);
-        if (done - lastPaint >= 20) { lastPaint = done; paint(); }
+        if (done - lastPaint >= 40) { lastPaint = done; paint(); }
       }));
 
       meta.partial = false;
       meta.at = Date.now();
       const result = paint();
       setProgress(0, 0);
-      if (settings.friends && result) await runFriends(result, settings);
+      if (!result) return;
+      ctx.meanZ = result.meanZ;
+      ctx.ref = result.ref;
+
+      flagState = { quick: result.flagged, refined: null, pending: 0, checked: 0 };
+      filmTab.renderFlags(panes.film, flagState, slug);
+      await Promise.all([
+        refineFlags(result, meta),
+        fansAlsoLove(result, rand),
+        settings.friends ? startFriends() : null,
+      ]);
     } catch (err) {
       console.error('[lbxd-weighted]', err);
-      body.insertAdjacentHTML('afterbegin', `<p class="lbw-error">Couldn't finish: ${esc(err.message)}</p>`);
+      panes.film.insertAdjacentHTML('afterbegin', `<p class="lbw-error">Couldn't finish: ${esc(err.message)}</p>`);
       setProgress(0, 0);
     } finally {
       running = false;
@@ -319,121 +178,166 @@
     }
   }
 
+  // Against type, properly: build each unusual rater's expected rating from
+  // their own history with this film's facets, then flag big misses.
+  async function refineFlags(result, meta) {
+    const seen = new Set();
+    const cands = result.raters
+      .filter((r) => r.n >= 25 && (Math.abs(r.z) >= 1 || r.source === 'review'))
+      .sort((a, b) => Math.abs(b.z) - Math.abs(a.z))
+      .filter((r) => (seen.has(r.user) ? false : seen.add(r.user)))
+      .slice(0, settings.tasteChecks);
+    flagState.pending = cands.length;
+    filmTab.renderFlags(panes.film, flagState, slug);
+
+    const checked = await Promise.all(cands.map(async (r) => {
+      const facets = await lb.getUserFacetRatings(r.user, ctx.facets, { excludeSlug: slug, similar: ctx.similar, lean: true }).catch(() => []);
+      const expected = stats.predictRating(stats.leaveOneOut(r.counts, r.rating), { facets, crowdZ: result.meanZ, ref: result.ref });
+      if (!expected) return null;
+      return {
+        ...r,
+        expected,
+        resid: (r.rating - expected.rating) / expected.sd,
+        contrarian: Math.abs(r.rating - result.film.mean) >= 1.75,
+      };
+    }));
+    const ok = checked.filter(Boolean);
+    flagState.refined = ok.filter((r) => Math.abs(r.resid) >= meta.zThreshold).sort((a, b) => Math.abs(b.resid) - Math.abs(a.resid));
+    flagState.checked = ok.length;
+    filmTab.renderFlags(panes.film, flagState, slug);
+  }
+
+  // People who love this film (relative to their own taste) also love…
+  async function fansAlsoLove(result, rand) {
+    const sample = result.raters.filter((r) => r.source === 'sample' && r.n >= 50);
+    const fans = sample.filter((r) => r.pct >= 0.9 && r.rating >= 4).sort((a, b) => b.pct - a.pct).slice(0, 15);
+    const ctrl = pick(sample.filter((r) => r.pct >= 0.2 && r.pct <= 0.6), 15, rand);
+    const state = { status: 'loading', total: fans.length + ctrl.length, fans: fans.length };
+    if (fans.length < 5) { state.status = 'done'; filmTab.renderAlsoLoved(panes.film, state, filmName); return; }
+    filmTab.renderAlsoLoved(panes.film, state, filmName);
+    const tops = await Promise.all([...fans, ...ctrl].map((r) => lb.getUserTopRated(r.user).catch(() => [])));
+    state.items = stats.alsoLoved(tops.slice(0, fans.length), tops.slice(fans.length), {
+      minFans: Math.max(2, Math.ceil(fans.length * 0.2)),
+      exclude: [slug],
+    });
+    state.status = 'done';
+    ctx.alsoLoved = state.items;
+    filmTab.renderAlsoLoved(panes.film, state, filmName);
+  }
+
   // ---------- friends ----------
 
-  const friendsEl = panel.querySelector('.lbw-friends');
-  const confDot = (c) => `<span class="lbw-conf -${c}" title="${c} confidence"></span>`;
-  const forThem = (p) => (p >= 0.5 ? `top ${p >= 0.99 ? '<1%' : pct(1 - p)}` : `bottom ${p < 0.01 ? '<1%' : pct(p)}`);
+  const friends = { status: 'waiting', friends: [], rows: [], queued: 0, done: 0, mutuals: 0, batch: DEFAULTS.friendBatch, check: null };
+  let friendList = null;
 
-  function whyLine(p, genres) {
-    const bits = [`usually ${fmt(p.mean)}`];
-    if (p.genreN >= 3 && genres.length) {
-      const g = genres.slice(0, 2).map((s) => s.replace(/-/g, ' ')).join(' / ');
-      const dir = p.rawAffinity > 0.15 ? 'likes' : p.rawAffinity < -0.15 ? 'cooler on' : 'neutral on';
-      bits.push(`${dir} ${g} (${signed(p.rawAffinity, 1)}σ, ${p.genreN} films)`);
-    }
-    return bits.join(' · ');
+  async function loadFriendList() {
+    if (friendList) return friendList;
+    friendList = (async () => {
+      const list = await lb.getFriends(me, settings.maxFriends).catch((e) => { console.warn('[lbxd-weighted] friends', e); return []; });
+      return [{ user: me, name: 'You', isMe: true, mutual: false }, ...list.filter((f) => f.user !== me)];
+    })();
+    return friendList;
   }
 
-  function renderFriends(state) {
-    friendsEl.hidden = false;
-    if (state.status === 'need-user') {
-      friendsEl.innerHTML = `<h3 class="lbw-section">Friends</h3>
-        <p class="lbw-muted">Sign in to Letterboxd, or set your username in the extension options, to see predicted ratings for the people you follow.</p>`;
-      return;
-    }
-    const rows = state.rows.filter((r) => r.pred);
-    const unseen = rows.filter((r) => !r.seen).sort((a, b) => b.pred.pct - a.pred.pct || b.pred.rating - a.pred.rating);
-    const seen = rows.filter((r) => r.seen && r.actual != null).sort((a, b) => b.actual - a.actual);
-    const seenUnrated = state.rows.filter((r) => r.seen && r.actual == null);
-    const recs = unseen.filter((r) => !r.isMe && r.pred.pct >= 0.7).slice(0, 5);
-    const me = state.rows.find((r) => r.isMe);
-
-    const unseenRows = unseen.map((r) => `<tr>
-        <td><a class="lbw-user" href="/${esc(r.user)}/">${r.isMe ? 'You' : esc(r.name || r.user)}</a></td>
-        <td class="lbw-num"><span class="lbw-stars">${stars(r.pred.rounded)}</span> <span class="lbw-muted">${fmt(r.pred.rating)}</span></td>
-        <td class="lbw-num">${forThem(r.pred.pct)}</td>
-        <td class="lbw-why">${confDot(r.pred.confidence)}${esc(whyLine(r.pred, state.genres))}</td>
-      </tr>`).join('');
-
-    const seenRows = seen.map((r) => {
-      const err = r.pred.rounded - r.actual;
-      return `<tr>
-        <td><a class="lbw-user" href="/${esc(r.user)}/film/${esc(slug)}/">${r.isMe ? 'You' : esc(r.name || r.user)}</a></td>
-        <td class="lbw-num"><span class="lbw-stars">${stars(r.actual)}</span></td>
-        <td class="lbw-num lbw-muted">predicted ${stars(r.pred.rounded)}</td>
-        <td class="lbw-num lbw-muted">${err === 0 ? 'exact' : signed(err, 1) + '★'}</td>
-      </tr>`;
-    }).join('');
-
-    const loading = state.status === 'loading';
-    friendsEl.innerHTML = `
-      <h3 class="lbw-section">Friends <span class="lbw-muted">${loading ? `· loading ${state.done}/${state.total}…` : `· ${state.total} you follow`}</span></h3>
-      ${me && !me.seen && me.pred ? `<p class="lbw-me">Your predicted rating: <span class="lbw-stars">${stars(me.pred.rounded)}</span> <strong>${fmt(me.pred.rating)}</strong> <span class="lbw-muted">· ${forThem(me.pred.pct)} of your ratings</span></p>` : ''}
-      ${recs.length ? `<div class="lbw-recs"><span class="lbw-muted">Recommend to</span> ${recs.map((r) => `<a class="lbw-rec" href="/${esc(r.user)}/" title="Predicted ${fmt(r.pred.rating)} · ${forThem(r.pred.pct)} of their ratings">${esc(r.name || r.user)} <span class="lbw-stars">${stars(r.pred.rounded)}</span></a>`).join('')}</div>`
-        : !loading && unseen.length ? '<p class="lbw-muted">None of your friends look likely to rank this in their top 30%.</p>' : ''}
-      <div class="lbw-flag-cols">
-        <div>
-          <h4 class="lbw-sub-h">Haven't seen it · predicted</h4>
-          ${unseenRows ? `<table class="lbw-table"><tbody>${unseenRows}</tbody></table>` : `<p class="lbw-muted">${loading ? '…' : 'Everyone you follow has seen it.'}</p>`}
-        </div>
-        <div>
-          <h4 class="lbw-sub-h">Already rated</h4>
-          ${seenRows ? `<table class="lbw-table"><tbody>${seenRows}</tbody></table>` : `<p class="lbw-muted">${loading ? '…' : 'No one you follow has rated it yet.'}</p>`}
-          ${seenUnrated.length ? `<p class="lbw-muted">Watched without rating: ${seenUnrated.map((r) => esc(r.name || r.user)).join(', ')}</p>` : ''}
-          ${state.check ? `<p class="lbw-check" title="Each friend who rated it is predicted as if they hadn't (their rating removed), then compared with what they actually gave.">Model check on ${state.check.n} friend${state.check.n === 1 ? '' : 's'}: off by <strong>±${fmt(state.check.mae)}★</strong> on average, vs ±${fmt(state.check.baseline)}★ for just guessing their usual average.</p>` : ''}
-        </div>
-      </div>`;
+  async function startFriends() {
+    if (!me) { friends.status = 'need-user'; friendsTab.render(panes.friends, friends, slug); return; }
+    const people = await loadFriendList();
+    friends.friends = people;
+    friends.mutuals = people.filter((p) => p.mutual).length;
+    friends.batch = settings.friendBatch;
+    await predictFriends();
   }
 
-  async function runFriends(result, settings) {
-    const me = (settings.username || '').trim().toLowerCase() || lb.detectUsername(document);
-    if (!me) return renderFriends({ status: 'need-user' });
+  async function predictFriends() {
+    if (friends.status === 'loading') return;
+    const next = friends.friends.slice(friends.queued, friends.queued + friends.batch);
+    if (!next.length) return;
+    friends.status = 'loading';
+    friends.queued += next.length;
+    friendsTab.render(panes.friends, friends, slug);
 
-    const genres = lb.parseFilmGenres(document);
-    const state = { status: 'loading', rows: [], done: 0, total: 0, genres, check: null };
-    renderFriends(state);
-
-    let following = [];
-    try { following = await lb.getFollowing(me, settings.maxFriends); } catch (e) { console.warn('[lbxd-weighted] following', e); }
-    const people = [{ user: me, name: 'You', isMe: true }, ...following.filter((f) => f.user !== me)];
-    state.total = following.length;
-
-    let lastPaint = 0;
-    await Promise.all(people.map(async (p) => {
+    let lastPaint = friends.done;
+    const myRated = new Map();
+    let myBase = null;
+    await Promise.all(next.map(async (p) => {
       const row = { ...p };
       try {
-        const [seen, profile, genreRatings] = await Promise.all([
+        const [seen, profile, facets] = await Promise.all([
           lb.getUserFilmRating(p.user, slug),
           lb.getProfile(p.user, settings.profileTtlDays),
-          lb.getUserGenreRatings(p.user, genres).catch(() => []),
+          lb.getUserFacetRatings(p.user, ctx.facets, { excludeSlug: slug, similar: ctx.similar, lean: true }).catch(() => []),
         ]);
         row.seen = seen.seen;
         row.actual = seen.seen ? seen.rating : null;
+        row.rated = new Map(facets.flatMap((f) => f.films.map((x) => [x.slug, x.rating])));
         if (profile) {
-          // Predict as if unseen: drop their own rating of this film from every input.
+          // Predict as if unseen: their rating of this film is removed from every input.
           const counts = row.actual != null ? stats.leaveOneOut(profile.counts, row.actual) : profile.counts;
-          const others = genreRatings.filter((g) => g.slug !== slug).map((g) => g.rating);
-          row.pred = stats.predictRating(counts, others, result.meanZ, result.ref);
+          row.base = stats.personBaseline(counts, ctx.ref);
+          row.pred = stats.predictRating(counts, { facets, crowdZ: ctx.meanZ, ref: ctx.ref });
         }
       } catch (e) {
         console.warn('[lbxd-weighted] friend', p.user, e);
       }
-      state.rows.push(row);
-      if (!p.isMe) state.done++;
-      if (state.done - lastPaint >= 5) { lastPaint = state.done; renderFriends(state); }
+      friends.rows.push(row);
+      friends.done++;
+      if (friends.done - lastPaint >= 8) { lastPaint = friends.done; friendsTab.render(panes.friends, friends, slug); }
     }));
 
-    const checked = state.rows.filter((r) => r.seen && r.actual != null && r.pred);
-    if (checked.length) {
-      state.check = {
-        n: checked.length,
-        mae: checked.reduce((a, r) => a + Math.abs(r.pred.rating - r.actual), 0) / checked.length,
-        baseline: checked.reduce((a, r) => a + Math.abs(r.pred.mean - r.actual), 0) / checked.length,
-      };
+    // Taste match with you, on films you've both rated within these facets.
+    const mine = friends.rows.find((r) => r.isMe);
+    if (mine?.rated && mine.base) {
+      mine.rated.forEach((v, k) => myRated.set(k, v));
+      myBase = mine.base;
+      friends.rows.forEach((r) => { if (!r.isMe && r.rated && r.base) r.match = stats.tasteMatch(myRated, myBase, r.rated, r.base); });
     }
-    state.status = 'done';
-    renderFriends(state);
+
+    const checked = friends.rows.filter((r) => r.seen && r.actual != null && r.pred);
+    friends.check = checked.length ? {
+      n: checked.length,
+      mae: checked.reduce((a, r) => a + Math.abs(r.pred.rating - r.actual), 0) / checked.length,
+      baseline: checked.reduce((a, r) => a + Math.abs(r.pred.mean - r.actual), 0) / checked.length,
+    } : null;
+    friends.status = 'done';
+    friendsTab.render(panes.friends, friends, slug);
+  }
+
+  // ---------- for a friend ----------
+
+  const forYou = { status: 'idle', people: null, selected: null, result: null, done: 0, total: 0 };
+
+  async function ensureForYou() {
+    if (!me) { forYou.status = 'need-user'; forYouTab.render(panes.foryou, forYou); return; }
+    if (forYou.people) return forYouTab.render(panes.foryou, forYou);
+    forYouTab.render(panes.foryou, forYou);
+    forYou.people = await loadFriendList();
+    forYou.selected = forYou.people.find((p) => p.mutual)?.user || forYou.people[1]?.user || me;
+    forYouTab.render(panes.foryou, forYou);
+  }
+
+  async function runForYou() {
+    if (forYou.status === 'loading' || !forYou.selected) return;
+    forYou.status = 'loading';
+    forYou.done = 0;
+    forYou.total = 1;
+    forYouTab.render(panes.foryou, forYou);
+    let last = 0;
+    try {
+      forYou.result = await recommend.recommendFor(forYou.selected, {
+        me,
+        ctx,
+        onProgress: (d, t) => {
+          forYou.done = d; forYou.total = t;
+          if (d - last >= 5 || d === t) { last = d; forYouTab.render(panes.foryou, forYou); }
+        },
+      });
+      forYou.status = 'done';
+    } catch (e) {
+      console.error('[lbxd-weighted] recommend', e);
+      forYou.status = 'error';
+      forYou.error = e.message;
+    }
+    forYouTab.render(panes.foryou, forYou);
   }
 
   // ---------- mount ----------
@@ -445,11 +349,15 @@
     else if (anchor.matches('.col-17')) anchor.append(panel);
     else anchor.after(panel);
 
-    const [settings, ui] = await Promise.all([
+    const [stored, local] = await Promise.all([
       chrome.storage.sync.get(DEFAULTS).catch(() => DEFAULTS),
-      chrome.storage.local.get('ui:collapsed').catch(() => ({})),
+      chrome.storage.local.get(['ui:collapsed', 'ui:tab']).catch(() => ({})),
     ]);
-    if (ui['ui:collapsed']) panel.querySelector('[data-act="toggle"]').click();
+    settings = { ...DEFAULTS, ...stored };
+    me = (settings.username || '').trim().toLowerCase() || lb.detectUsername(document);
+    friendsTab.render(panes.friends, me ? friends : { status: 'need-user' }, slug);
+    if (local['ui:collapsed']) panel.querySelector('[data-act="toggle"]').click();
+    if (local['ui:tab'] && panes[local['ui:tab']]) showTab(local['ui:tab']);
     if (settings.autoRun) run(false);
   })();
 })();

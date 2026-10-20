@@ -167,37 +167,177 @@
     };
   }
 
-  // Predict how a specific person would rate this film.
-  //   counts       their rating histogram (this film's rating already removed if they rated it)
-  //   genreRatings their ratings of other films sharing this film's genres
-  //   crowdZ       how far above their own norms the sampled crowd rates this film (analyse().meanZ)
-  //   ref          pooled reference { mean, sd }
-  // Model: z_hat = crowdZ + GENRE_WEIGHT * shrunk(genre affinity); rating = mu + sigma * z_hat.
-  const GENRE_WEIGHT = 0.8;
-  const GENRE_SHRINK = 8;
-  function predictRating(counts, genreRatings, crowdZ, ref, k = 20) {
+  // Person-level baseline (shrunk toward ref for thin accounts), no rating to judge.
+  function personBaseline(counts, ref, k = 20) {
     const s = histSummary(counts);
-    if (!s.n || !Number.isFinite(crowdZ)) return null;
-    const mean = (s.n * s.mean + k * ref.mean) / (s.n + k);
-    const sd = Math.max(0.35, Math.sqrt((s.n * s.sd ** 2 + k * ref.sd ** 2) / (s.n + k)));
-
-    const gr = (genreRatings || []).filter(Number.isFinite);
-    const rawAffinity = gr.length ? gr.reduce((a, r) => a + (r - mean) / sd, 0) / gr.length : 0;
-    const affinity = rawAffinity * (gr.length / (gr.length + GENRE_SHRINK));
-
-    const zHat = crowdZ + GENRE_WEIGHT * affinity;
-    const rating = Math.min(5, Math.max(0.5, mean + sd * zHat));
-    const rounded = Math.min(5, Math.max(0.5, Math.round(rating * 2) / 2));
-    const confidence = s.n >= 200 && gr.length >= 15 ? 'high' : s.n >= 50 && gr.length >= 5 ? 'medium' : 'low';
+    if (!s.n) return null;
     return {
-      rating, rounded, mean: s.mean, n: s.n, sd, zHat, affinity, rawAffinity, genreN: gr.length,
+      n: s.n,
+      rawMean: s.mean,
+      mean: (s.n * s.mean + k * ref.mean) / (s.n + k),
+      sd: Math.max(0.35, Math.sqrt((s.n * s.sd ** 2 + k * ref.sd ** 2) / (s.n + k))),
+    };
+  }
+
+  // Mean z of a set of ratings against a baseline, shrunk toward 0 for small sets.
+  function affinity(ratings, base, shrink) {
+    const rs = (ratings || []).filter(Number.isFinite);
+    if (!rs.length) return { raw: 0, shrunk: 0, n: 0 };
+    const clampZ = (z) => Math.max(-3, Math.min(3, z)); // one outlier rating can't dominate
+    const raw = rs.reduce((a, r) => a + clampZ((r - base.mean) / base.sd), 0) / rs.length;
+    return { raw, shrunk: raw * (rs.length / (rs.length + shrink)), n: rs.length };
+  }
+
+  // When raters haven't been sampled, approximate the crowd's rater-normalised z
+  // from the film's public average. Fitted on sampled films (Parasite 4.51 → +0.87,
+  // The Room 2.58 → −1.00); a rough proxy, not a substitute for sampling.
+  function crowdZFromAverage(avg) {
+    return Number.isFinite(avg) ? 0.97 * (avg - 3.61) : 0;
+  }
+
+  // Taste facets: a person's ratings of films sharing something with the target
+  // film. w = how much a full-confidence facet counts, k = shrinkage (films needed
+  // for half confidence). Specific facets (similar films, director) beat broad ones.
+  const FACETS = {
+    similar: { w: 1.0, k: 3, label: 'similar films' },
+    director: { w: 0.8, k: 2, label: 'director' },
+    theme: { w: 0.6, k: 5, label: 'theme' },
+    actor: { w: 0.35, k: 3, label: 'cast' },
+    genre: { w: 0.5, k: 8, label: 'genre' },
+    language: { w: 0.35, k: 6, label: 'language' },
+    country: { w: 0.25, k: 8, label: 'country' },
+    decade: { w: 0.2, k: 10, label: 'decade' },
+  };
+  const TASTE_PRIOR = 0.5; // pseudo-weight pulling the combined taste signal toward 0
+
+  // Predict how a specific person would rate a film.
+  //   counts  their rating histogram (this film's rating already removed if they rated it)
+  //   facets  [{ type, label, ratings: [numbers], films?: [{ name, rating }] }]
+  //           (genreRatings / similarRatings are shorthand for one facet each)
+  //   crowdZ  how far above their own norms the crowd rates the film
+  //   boost   extra z from recommendation context (e.g. a taste-matched friend loved it)
+  // Model: taste = Σ w·c·a / (Σ w·c + prior), where a = mean z on the facet and
+  // c = n/(n+k); z_hat = crowdZ + taste + boost; rating = mu + sigma·z_hat.
+  function predictRating(counts, { facets = [], genreRatings, similarRatings, crowdZ, ref, boost = 0 } = {}) {
+    const base = personBaseline(counts, ref);
+    if (!base || !Number.isFinite(crowdZ)) return null;
+    const all = facets.slice();
+    if (genreRatings) all.push({ type: 'genre', label: 'genre', ratings: genreRatings });
+    if (similarRatings) all.push({ type: 'similar', label: 'similar films', ratings: similarRatings });
+
+    let num = 0, den = TASTE_PRIOR, evidence = 0;
+    const parts = all.map((f) => {
+      const spec = FACETS[f.type] || FACETS.genre;
+      const a = affinity(f.ratings, base, 0);
+      const c = a.n / (a.n + spec.k);
+      num += spec.w * c * a.raw;
+      den += spec.w * c;
+      evidence += a.n * spec.w;
+      return { ...f, n: a.n, raw: a.raw, weight: spec.w * c };
+    }).filter((p) => p.n > 0);
+    const taste = num / den;
+    parts.forEach((p) => { p.contribution = (p.weight * p.raw) / den; });
+    parts.sort((x, y) => Math.abs(y.contribution) - Math.abs(x.contribution));
+
+    const zHat = crowdZ + taste + boost;
+    const rating = Math.min(5, Math.max(0.5, base.mean + base.sd * zHat));
+    const rounded = Math.min(5, Math.max(0.5, Math.round(rating * 2) / 2));
+    const confidence = base.n >= 200 && evidence >= 12 ? 'high' : base.n >= 50 && evidence >= 4 ? 'medium' : 'low';
+    const genre = parts.filter((p) => p.type === 'genre');
+    const similar = parts.find((p) => p.type === 'similar');
+    return {
+      rating, rounded, mean: base.rawMean, baseMean: base.mean, n: base.n, sd: base.sd, zHat, crowdZ, boost, taste,
+      parts, evidence,
+      // summary fields kept for simple displays
+      rawAffinity: genre.length ? genre.reduce((s, p) => s + p.raw * p.n, 0) / genre.reduce((s, p) => s + p.n, 0) : 0,
+      genreN: genre.reduce((s, p) => s + p.n, 0),
+      similarAffinity: similar ? similar.raw : 0,
+      similarN: similar ? similar.n : 0,
       pct: percentileOf(counts, rounded), confidence,
     };
   }
 
+  // "People who love X also love Y": films over-represented among fans' favourites
+  // compared with a control group. fans/controls: arrays of [{ slug, name, rating }].
+  function alsoLoved(fanLists, controlLists, { minFans = 3, exclude = [] } = {}) {
+    const skip = new Set(exclude);
+    const count = (lists) => {
+      const m = new Map();
+      lists.forEach((films) => {
+        new Set(films.filter((f) => f.rating >= 4.5).map((f) => f.slug)).forEach((s) => m.set(s, (m.get(s) || 0) + 1));
+      });
+      return m;
+    };
+    const names = new Map();
+    fanLists.flat().forEach((f) => names.set(f.slug, f.name));
+    const fans = count(fanLists), ctrl = count(controlLists);
+    const F = Math.max(1, fanLists.length), C = Math.max(1, controlLists.length);
+    return [...fans.entries()]
+      .filter(([slug, n]) => n >= minFans && !skip.has(slug))
+      .map(([slug, n]) => {
+        const fanShare = n / F;
+        const ctrlShare = ((ctrl.get(slug) || 0) + 0.5) / (C + 1);
+        return { slug, name: names.get(slug) || slug, fans: n, fanShare, lift: fanShare / ctrlShare };
+      })
+      .sort((a, b) => b.lift * Math.sqrt(b.fans) - a.lift * Math.sqrt(a.fans));
+  }
+
+  // Taste match between two people: Pearson correlation of their z-scores on
+  // films both have rated, shrunk toward 0 when the overlap is small.
+  // a, b: Map(slug -> rating); baseA/baseB from personBaseline.
+  function tasteMatch(a, baseA, b, baseB, shrink = 10) {
+    const xs = [], ys = [];
+    for (const [slug, ra] of a) {
+      const rb = b.get(slug);
+      if (rb == null) continue;
+      xs.push((ra - baseA.mean) / baseA.sd);
+      ys.push((rb - baseB.mean) / baseB.sd);
+    }
+    const n = xs.length;
+    if (n < 3) return { r: 0, raw: NaN, n };
+    const mx = xs.reduce((s, v) => s + v, 0) / n, my = ys.reduce((s, v) => s + v, 0) / n;
+    let sxy = 0, sxx = 0, syy = 0;
+    for (let i = 0; i < n; i++) { sxy += (xs[i] - mx) * (ys[i] - my); sxx += (xs[i] - mx) ** 2; syy += (ys[i] - my) ** 2; }
+    // Fall back to mean absolute agreement when someone has rated every overlap the same.
+    const raw = sxx && syy ? sxy / Math.sqrt(sxx * syy) : 1 - Math.min(1, xs.reduce((s, v, i) => s + Math.abs(v - ys[i]), 0) / n / 2);
+    return { r: raw * (n / (n + shrink)), raw, n };
+  }
+
+  // Per-genre affinity, sorted strongest-like first.
+  // genreLists: { genre: [ratings] }
+  function tasteFingerprint(lists, base, shrink = 8) {
+    return Object.entries(lists)
+      .map(([key, ratings]) => ({ key, ...affinity(ratings, base, shrink) }))
+      .filter((g) => g.n >= 3)
+      .sort((x, y) => y.shrunk - x.shrunk);
+  }
+
+  // Who likes this film? Compare segments of the sampled raters.
+  function segments(raters) {
+    const sample = raters.filter((r) => r.source === 'sample' && r.n >= 10);
+    const seg = (label, pred) => {
+      const g = sample.filter(pred);
+      return {
+        label,
+        n: g.length,
+        mean: weightedMean(g, (r) => r.rating, (r) => r.weight),
+        delta: weightedMean(g, (r) => r.delta, (r) => r.weight),
+      };
+    };
+    return [
+      seg('Harsh raters (avg < 3)', (r) => r.rawMean < 3),
+      seg('Middle (3–3.75)', (r) => r.rawMean >= 3 && r.rawMean <= 3.75),
+      seg('Generous (avg > 3.75)', (r) => r.rawMean > 3.75),
+      seg('Casual (< 100 ratings)', (r) => r.n < 100),
+      seg('Regulars (100–999)', (r) => r.n >= 100 && r.n < 1000),
+      seg('Cinephiles (1000+)', (r) => r.n >= 1000),
+    ].filter((s) => s.n >= 3);
+  }
+
   const api = {
     RATINGS, idxOf, histSummary, median, percentileOf, leaveOneOut, raterBaseline,
-    pooledReference, activityWeight, weightedMean, allocateSample, bimodality, analyse, predictRating,
+    pooledReference, activityWeight, weightedMean, allocateSample, bimodality, analyse,
+    FACETS, personBaseline, affinity, crowdZFromAverage, predictRating, alsoLoved, tasteMatch, tasteFingerprint, segments,
   };
   root.LBW = Object.assign(root.LBW || {}, { stats: api });
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
