@@ -18,6 +18,9 @@
   <label>Flag threshold (z)<small>Std. deviations from a rater's own average to flag</small><input id="zThreshold" type="number" min="1" max="4" step="0.25"></label>
   <label>Popular review pages<small>12 reviews per page, checked for flags</small><input id="reviewPages" type="number" min="0" max="5" step="1"></label>
   <label>Profile cache (days)<small>How long a rater's histogram is reused</small><input id="profileTtlDays" type="number" min="1" max="90" step="1"></label>
+  <label>Friend predictions<small>Predict ratings for people you follow</small><input id="friends" type="checkbox"></label>
+  <label>Your username<small>Leave blank to use whoever is signed in</small><input id="username" type="text" placeholder="auto" style="width:90px"></label>
+  <label>Max friends<small>How many people you follow to check</small><input id="maxFriends" type="number" min="5" max="200" step="5"></label>
   <label>Run automatically<small>Analyse as soon as a film page opens</small><input id="autoRun" type="checkbox"></label>
   <div class="row">
     <button id="save">Save</button>

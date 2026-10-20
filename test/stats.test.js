@@ -81,3 +81,32 @@ test('analyse flags out-of-character ratings once per user', () => {
   assert.equal(r.flagged[0].user, 'grump');
   assert.ok(r.flagged[0].contrarian === false);
 });
+
+test('predictRating: crowd loves it relative to norms -> above friend average', () => {
+  const friend = [2, 4, 8, 15, 25, 40, 40, 30, 15, 6]; // avg ~3.3
+  const p = s.predictRating(friend, [], 1.0, { mean: 3.3, sd: 1 });
+  assert.ok(p.rating > p.mean + 0.5, `${p.rating} vs ${p.mean}`);
+  assert.ok(p.pct > 0.7);
+});
+
+test('predictRating: genre affinity moves the prediction', () => {
+  const friend = [2, 4, 8, 15, 25, 40, 40, 30, 15, 6];
+  const ref = { mean: 3.3, sd: 1 };
+  const base = s.predictRating(friend, [], 0, ref);
+  const fan = s.predictRating(friend, Array(30).fill(4.5), 0, ref);
+  const hater = s.predictRating(friend, Array(30).fill(1.5), 0, ref);
+  assert.ok(fan.rating > base.rating + 0.5);
+  assert.ok(hater.rating < base.rating - 0.5);
+  assert.equal(fan.confidence, 'medium'); // 185 ratings < 200
+  assert.equal(s.predictRating(friend.map((c) => c * 2), Array(30).fill(4.5), 0, ref).confidence, 'high');
+});
+
+test('predictRating: few genre films barely move it, and output is clamped', () => {
+  const friend = [0, 0, 0, 0, 0, 0, 0, 5, 20, 80];
+  const ref = { mean: 3.3, sd: 1 };
+  const a = s.predictRating(friend, [], 0, ref);
+  const b = s.predictRating(friend, [0.5], 0, ref);
+  assert.ok(Math.abs(a.rating - b.rating) < 0.4);
+  assert.ok(s.predictRating(friend, [], 5, ref).rating <= 5);
+  assert.equal(s.predictRating(friend, [], NaN, ref), null);
+});

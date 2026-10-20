@@ -6,7 +6,7 @@
   if (parts[0] !== 'film' || parts.length !== 2) return; // main film page only
   const slug = parts[1];
 
-  const DEFAULTS = { sampleSize: 120, zThreshold: 2, reviewPages: 2, profileTtlDays: 14, autoRun: true };
+  const DEFAULTS = { sampleSize: 120, zThreshold: 2, reviewPages: 2, profileTtlDays: 14, autoRun: true, username: '', maxFriends: 40, friends: true };
 
   // ---------- small utils ----------
 
@@ -68,6 +68,7 @@
     </header>
     <div class="lbw-progress" hidden><div class="lbw-bar"></div><span class="lbw-progress-label"></span></div>
     <div class="lbw-body"><p class="lbw-empty">Click <strong>Analyse</strong> to sample this film's raters.</p></div>
+    <div class="lbw-friends" hidden></div>
   `;
   const body = panel.querySelector('.lbw-body');
   const progress = panel.querySelector('.lbw-progress');
@@ -288,7 +289,10 @@
         const raters = entries
           .filter((e) => profiles.get(e.user))
           .map((e) => ({ ...e, counts: profiles.get(e.user).counts, name: e.name || profiles.get(e.user).name }));
-        if (raters.length) render(stats.analyse(film.counts, raters, settings), meta);
+        if (!raters.length) return null;
+        const result = stats.analyse(film.counts, raters, settings);
+        render(result, meta);
+        return result;
       };
 
       setProgress(0, users.length);
@@ -301,8 +305,9 @@
 
       meta.partial = false;
       meta.at = Date.now();
-      paint();
+      const result = paint();
       setProgress(0, 0);
+      if (settings.friends && result) await runFriends(result, settings);
     } catch (err) {
       console.error('[lbxd-weighted]', err);
       body.insertAdjacentHTML('afterbegin', `<p class="lbw-error">Couldn't finish: ${esc(err.message)}</p>`);
@@ -312,6 +317,123 @@
       btn.disabled = false;
       btn.textContent = 'Resample';
     }
+  }
+
+  // ---------- friends ----------
+
+  const friendsEl = panel.querySelector('.lbw-friends');
+  const confDot = (c) => `<span class="lbw-conf -${c}" title="${c} confidence"></span>`;
+  const forThem = (p) => (p >= 0.5 ? `top ${p >= 0.99 ? '<1%' : pct(1 - p)}` : `bottom ${p < 0.01 ? '<1%' : pct(p)}`);
+
+  function whyLine(p, genres) {
+    const bits = [`usually ${fmt(p.mean)}`];
+    if (p.genreN >= 3 && genres.length) {
+      const g = genres.slice(0, 2).map((s) => s.replace(/-/g, ' ')).join(' / ');
+      const dir = p.rawAffinity > 0.15 ? 'likes' : p.rawAffinity < -0.15 ? 'cooler on' : 'neutral on';
+      bits.push(`${dir} ${g} (${signed(p.rawAffinity, 1)}σ, ${p.genreN} films)`);
+    }
+    return bits.join(' · ');
+  }
+
+  function renderFriends(state) {
+    friendsEl.hidden = false;
+    if (state.status === 'need-user') {
+      friendsEl.innerHTML = `<h3 class="lbw-section">Friends</h3>
+        <p class="lbw-muted">Sign in to Letterboxd, or set your username in the extension options, to see predicted ratings for the people you follow.</p>`;
+      return;
+    }
+    const rows = state.rows.filter((r) => r.pred);
+    const unseen = rows.filter((r) => !r.seen).sort((a, b) => b.pred.pct - a.pred.pct || b.pred.rating - a.pred.rating);
+    const seen = rows.filter((r) => r.seen && r.actual != null).sort((a, b) => b.actual - a.actual);
+    const seenUnrated = state.rows.filter((r) => r.seen && r.actual == null);
+    const recs = unseen.filter((r) => !r.isMe && r.pred.pct >= 0.7).slice(0, 5);
+    const me = state.rows.find((r) => r.isMe);
+
+    const unseenRows = unseen.map((r) => `<tr>
+        <td><a class="lbw-user" href="/${esc(r.user)}/">${r.isMe ? 'You' : esc(r.name || r.user)}</a></td>
+        <td class="lbw-num"><span class="lbw-stars">${stars(r.pred.rounded)}</span> <span class="lbw-muted">${fmt(r.pred.rating)}</span></td>
+        <td class="lbw-num">${forThem(r.pred.pct)}</td>
+        <td class="lbw-why">${confDot(r.pred.confidence)}${esc(whyLine(r.pred, state.genres))}</td>
+      </tr>`).join('');
+
+    const seenRows = seen.map((r) => {
+      const err = r.pred.rounded - r.actual;
+      return `<tr>
+        <td><a class="lbw-user" href="/${esc(r.user)}/film/${esc(slug)}/">${r.isMe ? 'You' : esc(r.name || r.user)}</a></td>
+        <td class="lbw-num"><span class="lbw-stars">${stars(r.actual)}</span></td>
+        <td class="lbw-num lbw-muted">predicted ${stars(r.pred.rounded)}</td>
+        <td class="lbw-num lbw-muted">${err === 0 ? 'exact' : signed(err, 1) + '★'}</td>
+      </tr>`;
+    }).join('');
+
+    const loading = state.status === 'loading';
+    friendsEl.innerHTML = `
+      <h3 class="lbw-section">Friends <span class="lbw-muted">${loading ? `· loading ${state.done}/${state.total}…` : `· ${state.total} you follow`}</span></h3>
+      ${me && !me.seen && me.pred ? `<p class="lbw-me">Your predicted rating: <span class="lbw-stars">${stars(me.pred.rounded)}</span> <strong>${fmt(me.pred.rating)}</strong> <span class="lbw-muted">· ${forThem(me.pred.pct)} of your ratings</span></p>` : ''}
+      ${recs.length ? `<div class="lbw-recs"><span class="lbw-muted">Recommend to</span> ${recs.map((r) => `<a class="lbw-rec" href="/${esc(r.user)}/" title="Predicted ${fmt(r.pred.rating)} · ${forThem(r.pred.pct)} of their ratings">${esc(r.name || r.user)} <span class="lbw-stars">${stars(r.pred.rounded)}</span></a>`).join('')}</div>`
+        : !loading && unseen.length ? '<p class="lbw-muted">None of your friends look likely to rank this in their top 30%.</p>' : ''}
+      <div class="lbw-flag-cols">
+        <div>
+          <h4 class="lbw-sub-h">Haven't seen it · predicted</h4>
+          ${unseenRows ? `<table class="lbw-table"><tbody>${unseenRows}</tbody></table>` : `<p class="lbw-muted">${loading ? '…' : 'Everyone you follow has seen it.'}</p>`}
+        </div>
+        <div>
+          <h4 class="lbw-sub-h">Already rated</h4>
+          ${seenRows ? `<table class="lbw-table"><tbody>${seenRows}</tbody></table>` : `<p class="lbw-muted">${loading ? '…' : 'No one you follow has rated it yet.'}</p>`}
+          ${seenUnrated.length ? `<p class="lbw-muted">Watched without rating: ${seenUnrated.map((r) => esc(r.name || r.user)).join(', ')}</p>` : ''}
+          ${state.check ? `<p class="lbw-check" title="Each friend who rated it is predicted as if they hadn't (their rating removed), then compared with what they actually gave.">Model check on ${state.check.n} friend${state.check.n === 1 ? '' : 's'}: off by <strong>±${fmt(state.check.mae)}★</strong> on average, vs ±${fmt(state.check.baseline)}★ for just guessing their usual average.</p>` : ''}
+        </div>
+      </div>`;
+  }
+
+  async function runFriends(result, settings) {
+    const me = (settings.username || '').trim().toLowerCase() || lb.detectUsername(document);
+    if (!me) return renderFriends({ status: 'need-user' });
+
+    const genres = lb.parseFilmGenres(document);
+    const state = { status: 'loading', rows: [], done: 0, total: 0, genres, check: null };
+    renderFriends(state);
+
+    let following = [];
+    try { following = await lb.getFollowing(me, settings.maxFriends); } catch (e) { console.warn('[lbxd-weighted] following', e); }
+    const people = [{ user: me, name: 'You', isMe: true }, ...following.filter((f) => f.user !== me)];
+    state.total = following.length;
+
+    let lastPaint = 0;
+    await Promise.all(people.map(async (p) => {
+      const row = { ...p };
+      try {
+        const [seen, profile, genreRatings] = await Promise.all([
+          lb.getUserFilmRating(p.user, slug),
+          lb.getProfile(p.user, settings.profileTtlDays),
+          lb.getUserGenreRatings(p.user, genres).catch(() => []),
+        ]);
+        row.seen = seen.seen;
+        row.actual = seen.seen ? seen.rating : null;
+        if (profile) {
+          // Predict as if unseen: drop their own rating of this film from every input.
+          const counts = row.actual != null ? stats.leaveOneOut(profile.counts, row.actual) : profile.counts;
+          const others = genreRatings.filter((g) => g.slug !== slug).map((g) => g.rating);
+          row.pred = stats.predictRating(counts, others, result.meanZ, result.ref);
+        }
+      } catch (e) {
+        console.warn('[lbxd-weighted] friend', p.user, e);
+      }
+      state.rows.push(row);
+      if (!p.isMe) state.done++;
+      if (state.done - lastPaint >= 5) { lastPaint = state.done; renderFriends(state); }
+    }));
+
+    const checked = state.rows.filter((r) => r.seen && r.actual != null && r.pred);
+    if (checked.length) {
+      state.check = {
+        n: checked.length,
+        mae: checked.reduce((a, r) => a + Math.abs(r.pred.rating - r.actual), 0) / checked.length,
+        baseline: checked.reduce((a, r) => a + Math.abs(r.pred.mean - r.actual), 0) / checked.length,
+      };
+    }
+    state.status = 'done';
+    renderFriends(state);
   }
 
   // ---------- mount ----------

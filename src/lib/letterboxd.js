@@ -83,7 +83,7 @@
     if (next) setTimeout(next, GAP_MS);
   }
 
-  async function fetchDoc(path, attempt = 0) {
+  async function fetchDoc(path, { allow404 = false } = {}, attempt = 0) {
     await slot();
     let res;
     try {
@@ -93,8 +93,9 @@
     }
     if (res.status === 429 && attempt < 3) {
       await sleep(1500 * (attempt + 1));
-      return fetchDoc(path, attempt + 1);
+      return fetchDoc(path, { allow404 }, attempt + 1);
     }
+    if (allow404 && res.status === 404) return null;
     if (!res.ok) throw new Error(`${res.status} ${path}`);
     return parser.parseFromString(await res.text(), 'text/html');
   }
@@ -157,8 +158,80 @@
     });
   }
 
+  // ---------- friends ----------
+
+  // The signed-in user's name lives in an inline `person = { username: "..." }` script.
+  function detectUsername(doc) {
+    for (const s of doc.querySelectorAll('script:not([src])')) {
+      const m = s.textContent.match(/person\s*=\s*\{\s*username:\s*"([^"]*)"/);
+      if (m) return m[1] || null;
+    }
+    return null;
+  }
+
+  function parseFilmGenres(doc) {
+    const links = doc.querySelectorAll('#tab-panel-genres a[href^="/films/genre/"], #tab-genres a[href^="/films/genre/"]');
+    return [...new Set([...links].map((a) => a.getAttribute('href').split('/')[3]).filter(Boolean))];
+  }
+
+  function parseFollowing(doc) {
+    return [...doc.querySelectorAll('.person-summary a.name')].map((a) => ({
+      user: (a.getAttribute('href') || '').split('/')[1],
+      name: a.textContent.trim(),
+    })).filter((f) => f.user);
+  }
+
+  // Film grid items carry `rated-N` where N is half-stars.
+  function parseGridRatings(doc) {
+    return [...doc.querySelectorAll('.griditem')].map((li) => {
+      const slug = li.querySelector('[data-item-slug]')?.dataset.itemSlug;
+      const m = (li.querySelector('.rating')?.className || '').match(/rated-(\d+)/);
+      return slug && m ? { slug, rating: parseInt(m[1], 10) / 2 } : null;
+    }).filter(Boolean);
+  }
+
+  async function getFollowing(user, maxFriends) {
+    return cached(`following:${user}:${maxFriends}`, DAY, async () => {
+      const out = [];
+      for (let p = 1; out.length < maxFriends && p <= 20; p++) {
+        const doc = await fetchDoc(`/${user}/following/${p > 1 ? `page/${p}/` : ''}`);
+        const batch = parseFollowing(doc);
+        out.push(...batch);
+        if (!doc.querySelector('.pagination a.next')) break;
+      }
+      return out.slice(0, maxFriends);
+    });
+  }
+
+  // { seen: false } | { seen: true, rating: number|NaN }
+  async function getUserFilmRating(user, slug) {
+    return cached(`seen:${user}:${slug}`, 2 * DAY, async () => {
+      const doc = await fetchDoc(`/${user}/film/${slug}/`, { allow404: true });
+      if (!doc) return { seen: false };
+      const label = [...doc.querySelectorAll('meta[name="twitter:data2"]')].map((m) => m.content)[0];
+      const rating = parseStars(label);
+      return { seen: true, rating: Number.isFinite(rating) ? rating : null };
+    });
+  }
+
+  // The user's ratings of films in the same genre(s): the combined genres first,
+  // then the primary genre alone if the combination is too thin.
+  async function getUserGenreRatings(user, genres) {
+    if (!genres.length) return [];
+    const key = genres.slice(0, 2).join('+');
+    return cached(`genre:${user}:${key}`, 7 * DAY, async () => {
+      let rated = parseGridRatings(await fetchDoc(`/${user}/films/genre/${key}/`));
+      if (rated.length < 10 && genres.length > 1) {
+        rated = parseGridRatings(await fetchDoc(`/${user}/films/genre/${genres[0]}/`));
+      }
+      return rated;
+    });
+  }
+
   LBW.lb = {
     parseHistogram, parseWeightedAverage, parseStars, parseRatedUsers, parseReviews, parseProfile,
-    getFilmHistogram, getUsersInBucket, getPopularReviews, getProfile, clearCache, cached, DAY,
+    detectUsername, parseFilmGenres, parseFollowing, parseGridRatings,
+    getFilmHistogram, getUsersInBucket, getPopularReviews, getProfile,
+    getFollowing, getUserFilmRating, getUserGenreRatings, clearCache, cached, DAY,
   };
 })(globalThis);

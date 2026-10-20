@@ -167,9 +167,37 @@
     };
   }
 
+  // Predict how a specific person would rate this film.
+  //   counts       their rating histogram (this film's rating already removed if they rated it)
+  //   genreRatings their ratings of other films sharing this film's genres
+  //   crowdZ       how far above their own norms the sampled crowd rates this film (analyse().meanZ)
+  //   ref          pooled reference { mean, sd }
+  // Model: z_hat = crowdZ + GENRE_WEIGHT * shrunk(genre affinity); rating = mu + sigma * z_hat.
+  const GENRE_WEIGHT = 0.8;
+  const GENRE_SHRINK = 8;
+  function predictRating(counts, genreRatings, crowdZ, ref, k = 20) {
+    const s = histSummary(counts);
+    if (!s.n || !Number.isFinite(crowdZ)) return null;
+    const mean = (s.n * s.mean + k * ref.mean) / (s.n + k);
+    const sd = Math.max(0.35, Math.sqrt((s.n * s.sd ** 2 + k * ref.sd ** 2) / (s.n + k)));
+
+    const gr = (genreRatings || []).filter(Number.isFinite);
+    const rawAffinity = gr.length ? gr.reduce((a, r) => a + (r - mean) / sd, 0) / gr.length : 0;
+    const affinity = rawAffinity * (gr.length / (gr.length + GENRE_SHRINK));
+
+    const zHat = crowdZ + GENRE_WEIGHT * affinity;
+    const rating = Math.min(5, Math.max(0.5, mean + sd * zHat));
+    const rounded = Math.min(5, Math.max(0.5, Math.round(rating * 2) / 2));
+    const confidence = s.n >= 200 && gr.length >= 15 ? 'high' : s.n >= 50 && gr.length >= 5 ? 'medium' : 'low';
+    return {
+      rating, rounded, mean: s.mean, n: s.n, sd, zHat, affinity, rawAffinity, genreN: gr.length,
+      pct: percentileOf(counts, rounded), confidence,
+    };
+  }
+
   const api = {
     RATINGS, idxOf, histSummary, median, percentileOf, leaveOneOut, raterBaseline,
-    pooledReference, activityWeight, weightedMean, allocateSample, bimodality, analyse,
+    pooledReference, activityWeight, weightedMean, allocateSample, bimodality, analyse, predictRating,
   };
   root.LBW = Object.assign(root.LBW || {}, { stats: api });
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
