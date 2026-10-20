@@ -108,14 +108,31 @@
   }
 
   function deviationChart(raters, flaggedUsers) {
-    const W = 640, H = 150, padX = 28, top = 14, bottom = 30;
+    const W = 640, H = 170, padX = 28, top = 14, bottom = 30;
     const lo = -4, hi = 4;
     const x = (d) => padX + ((Math.max(lo, Math.min(hi, d)) - lo) / (hi - lo)) * (W - 2 * padX);
     const plotH = H - top - bottom;
     const ticks = [-4, -3, -2, -1, 0, 1, 2, 3, 4];
 
+    // Beeswarm: place each dot at the free offset nearest the centre line.
+    const R = 4.5, D = 2 * R + 1, mid = top + plotH / 2, maxOff = plotH / 2 - R;
+    const placed = [];
+    const ys = new Map();
+    raters.slice().sort((p, q) => p.delta - q.delta).forEach((r) => {
+      const cx = x(r.delta);
+      const near = placed.filter((p) => Math.abs(p.cx - cx) < D);
+      let y = mid;
+      for (let k = 0; k < 200; k++) {
+        const off = Math.ceil(k / 2) * (D / 2) * (k % 2 ? -1 : 1);
+        const cand = mid + Math.max(-maxOff, Math.min(maxOff, off));
+        if (near.every((p) => (p.cx - cx) ** 2 + (p.y - cand) ** 2 >= D * D)) { y = cand; break; }
+      }
+      placed.push({ cx, y });
+      ys.set(r, y);
+    });
+
     const dots = raters.map((r) => {
-      const jy = top + 6 + (hash(r.user + r.source) % 1000) / 1000 * (plotH - 12);
+      const jy = ys.get(r);
       const cls = r.delta > 0.25 ? '-up' : r.delta < -0.25 ? '-down' : '-flat';
       const ring = flaggedUsers.has(r.user) ? ' -flag' : '';
       const tip = `${r.name || r.user}: gave ${stars(r.rating)} · usually ${fmt(r.rawMean)} (${r.n} ratings) · ${signed(r.delta)}★ · z ${signed(r.z, 1)}`;
@@ -146,7 +163,8 @@
     if (!flagged.length) return `<div class="lbw-flags"><h3>${esc(title)}</h3><p class="lbw-muted">${esc(empty)}</p></div>`;
     return `<div class="lbw-flags"><h3>${esc(title)}</h3><ol>${flagged.slice(0, 8).map((r) => {
       const link = r.link || `/${r.user}/film/${slug}/`;
-      const where = r.pct >= 0.5 ? `top ${pct(1 - r.pct)}` : `bottom ${pct(r.pct)}`;
+      const share = (v) => (v < 0.01 ? '<1%' : pct(v));
+      const where = r.pct >= 0.5 ? `top ${share(1 - r.pct)}` : `bottom ${share(r.pct)}`;
       return `<li>
         <a class="lbw-user" href="${esc(link)}">${esc(r.name || r.user)}</a>
         ${r.source === 'review' ? '<span class="lbw-chip">review</span>' : ''}
