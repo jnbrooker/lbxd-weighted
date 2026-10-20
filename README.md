@@ -64,6 +64,40 @@ Pick anyone you follow (or yourself) and get the films to recommend to them.
    the film's Letterboxd average. It double-checks they haven't seen it, then ranks by where it would land among
    *their own* ratings.
 
+## Top films · weighted
+
+A **Weighted** item next to Films / Lists / Members opens . It ranks
+Letterboxd's highest-rated or most popular films (top 100, 250 or 500) by the rater-normalised score instead of raw stars.
+Columns: personal rank, top-10% share, activity-weighted and Bayesian scores, plus each film's move vs the Letterboxd order.
+
+A full run is slow (thousands of page loads), so it's built to be efficient:
+1. **Instant pass:** one histogram per film gives a Bayesian ranking straight away,
+   (v·R + m·C)/(v + m), with m = 20,000 and C = 3.3.
+2. **Refinement:** a small stratified panel per film (20/40/80/150 raters), worked top-down. Rater profiles are
+   shared across films, because top films share raters, and every film is scored on one fixed scale so the list is comparable.
+   95% intervals are shown.
+3. **Resumable:** results are saved for 7 days, so you can pause, close the tab and continue later. Full
+   300-rater results from film pages you've visited are reused.
+
+## Member profiles
+
+Every profile () gets an **Advanced stats** panel. It reads about 200 of that member's
+rated films and each film's histogram:
+- **Expected vs actual** scatter. The expected rating is their own norm, shifted by how the crowd rates the film.
+  The chart shows the y = x line and their trend line.
+- Their rating spread vs Letterboxd averages on the same films.
+- **Crowd agreement:** correlation, and a slope that shows whether they amplify or compress the crowd.
+- **Predictability:** error vs expectation.
+- **Generosity** vs the crowd.
+- **Mainstream:** median rating count of the films they rate, and their share of obscure films.
+- **Acclaim taste:** the average Letterboxd rating of the films they choose.
+- **Scale use:** effective rating levels, half-stars, 5★ share.
+- **Harshness** percentile among members the extension has cached.
+- Genre and decade fingerprints.
+- **Drift** vs expectation over time.
+- **Hot takes** in both directions.
+- Taste match with you, plus the films you both love and the ones you clash on most.
+
 ## How the numbers are produced
 
 1. The film's histogram comes from `/csi/film/<slug>/rating-histogram/`.
@@ -78,7 +112,7 @@ Pick anyone you follow (or yourself) and get the films to recommend to them.
    mean z of their ratings there, weighted by how specific the facet is (similar films > director >
    theme > genre > language > country > decade) and shrunk by the number of films behind it.
 
-Requests are same-origin, limited to 6 at a time, and back off on HTTP 429. Results are cached in
+Requests are same-origin, at most 6 in flight and about 8 per second. On HTTP 429 they slow down for every request, not just the one that failed. Results are cached in
 `chrome.storage.local`: profiles for 14 days, facet lists and film details for 7 days, bucket lists
 for 2 days. The sample is seeded per film, so revisits reuse the cache. **Resample** draws a fresh sample.
 

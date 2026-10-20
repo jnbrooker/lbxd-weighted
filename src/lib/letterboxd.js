@@ -67,21 +67,28 @@
 
   const parser = new DOMParser();
   const netStats = { requests: 0 };
-  let active = 0;
-  const waiters = [];
+  // Politeness: at most MAX_CONCURRENT requests in flight and request starts
+  // spaced at least MIN_INTERVAL_MS apart (≈8/s), slowing down after any 429.
   const MAX_CONCURRENT = 6;
-  const GAP_MS = 120;
+  const MIN_INTERVAL_MS = 125;
+  let interval = MIN_INTERVAL_MS;
+  let active = 0;
+  let nextStart = 0;
+  const waiters = [];
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
   async function slot() {
-    if (active < MAX_CONCURRENT) { active++; return; }
-    await new Promise((r) => waiters.push(r));
-    active++;
+    if (active >= MAX_CONCURRENT) await new Promise((r) => waiters.push(r));
+    else active++;
+    const now = Date.now();
+    const at = Math.max(now, nextStart);
+    nextStart = at + interval;
+    if (at > now) await sleep(at - now);
   }
   function release() {
-    active--;
     const next = waiters.shift();
-    if (next) setTimeout(next, GAP_MS);
+    if (next) next(); // hand the slot straight over; `active` stays the same
+    else active--;
   }
 
   async function fetchDoc(path, { allow404 = false } = {}, attempt = 0) {
@@ -94,9 +101,11 @@
       release();
     }
     if (res.status === 429 && attempt < 3) {
+      interval = Math.min(2000, interval * 2); // back off for everyone, recover slowly below
       await sleep(1500 * (attempt + 1));
       return fetchDoc(path, { allow404 }, attempt + 1);
     }
+    if (res.ok && interval > MIN_INTERVAL_MS) interval = Math.max(MIN_INTERVAL_MS, interval * 0.95);
     if (allow404 && res.status === 404) return null;
     if (!res.ok) throw new Error(`${res.status} ${path}`);
     return parser.parseFromString(await res.text(), 'text/html');
