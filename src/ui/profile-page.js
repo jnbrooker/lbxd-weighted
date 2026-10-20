@@ -27,8 +27,20 @@
       const tip = `${r.name}: gave ${stars(r.rating)} · expected ${fmt(r.expected)} · Letterboxd ${fmt(r.avg)} · ${fmtVotes(r.votes)} ratings`;
       return `<g class="lbw-dot ${cls}" data-tip="${esc(tip)}"><circle class="hit" cx="${x(r.expected + jx).toFixed(1)}" cy="${y(r.rating + jy).toFixed(1)}" r="8"></circle><circle class="mark" cx="${x(r.expected + jx).toFixed(1)}" cy="${y(r.rating + jy).toFixed(1)}" r="3.5"></circle></g>`;
     }).join('');
-    const fitLine = Number.isFinite(fit.slope)
-      ? `<line class="lbw-fit" x1="${x(0.5)}" y1="${y(Math.max(0.5, Math.min(5, fit.intercept + fit.slope * 0.5)))}" x2="${x(5)}" y2="${y(Math.max(0.5, Math.min(5, fit.intercept + fit.slope * 5)))}"></line>` : '';
+    // Trend line over the data's x-range, clipped where it leaves the 0.5–5 band
+    // (clamping the endpoints instead would bend it onto the diagonal).
+    let fitLine = '';
+    if (Number.isFinite(fit.slope) && rows.length) {
+      const xs = rows.map((r) => r.expected);
+      let x0 = Math.min(...xs), x1 = Math.max(...xs);
+      const at = (v) => fit.intercept + fit.slope * v;
+      const solve = (yv) => (yv - fit.intercept) / fit.slope;
+      if (fit.slope) {
+        const lo = Math.min(solve(0.5), solve(5)), hi = Math.max(solve(0.5), solve(5));
+        x0 = Math.max(x0, lo); x1 = Math.min(x1, hi);
+      }
+      if (x1 > x0) fitLine = `<line class="lbw-fit" x1="${x(x0).toFixed(1)}" y1="${y(at(x0)).toFixed(1)}" x2="${x(x1).toFixed(1)}" y2="${y(at(x1)).toFixed(1)}"></line>`;
+    }
     return `<figure class="lbw-chart">
       <figcaption><span>Expected vs actual — each dot is one of their films</span>
         <span class="lbw-legend"><i class="-up"></i>beat expectation <i class="-flat"></i>as expected <i class="-down"></i>below expectation <b class="lbw-key-line -diag"></b>as predicted <b class="lbw-key-line -fit"></b>their trend</span></figcaption>
@@ -58,7 +70,7 @@
     const h = (v) => ((H - B - T) * v) / max;
     return `<figure class="lbw-chart">
       <figcaption><span>How they spread their ratings vs the crowd on the same films</span>
-        <span class="lbw-legend"><i class="-theirs"></i>their ratings <b class="lbw-key-line -crowd"></b>Letterboxd averages</span></figcaption>
+        <span class="lbw-legend"><i class="-theirs"></i>their ratings <b class="lbw-key-line -crowd"></b>Letterboxd averages (averages always bunch toward the middle)</span></figcaption>
       <svg ${SVG_NS_ATTR} viewBox="0 0 ${W} ${H}" role="img" aria-label="Rating distribution">
         ${theirs.map((v, i) => `<rect class="lbw-bar-theirs" x="${L + i * bw + 3}" y="${H - B - h(v)}" width="${bw - 6}" height="${Math.max(0, h(v))}" rx="3"><title>${stars((i + 1) / 2)}: ${v} of their ratings, ${crowd[i]} crowd averages</title></rect>`).join('')}
         <polyline class="lbw-crowd-line" points="${crowd.map((v, i) => `${L + i * bw + bw / 2},${H - B - h(v)}`).join(' ')}"></polyline>
