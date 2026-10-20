@@ -54,7 +54,16 @@
               <td class="lbw-num lbw-muted">${err === 0 ? 'exact' : signed(err, 1) + '★'}</td>
             </tr>`;
           }).join('')}</tbody></table>` : `<p class="lbw-muted">${loading ? '…' : 'No one checked has rated it yet.'}</p>`}
-          ${seenUnrated.length ? `<p class="lbw-muted">Watched without rating: ${seenUnrated.map((r) => esc(nameOf(r))).join(', ')}</p>` : ''}
+          ${seenUnrated.length ? `<h3 class="lbw-sub-h lbw-sub-gap">Watched, didn't rate · predicted</h3>
+            <table class="lbw-table"><tbody>${seenUnrated
+              .slice().sort((a, b) => (b.pred?.pct ?? -1) - (a.pred?.pct ?? -1))
+              .map((r) => `<tr>
+                <td><a class="lbw-user" href="/${esc(r.user)}/film/${esc(slug)}/">${esc(nameOf(r))}</a> ${mutualChip(r)}</td>
+                ${r.pred ? `<td class="lbw-num"><span class="lbw-stars">${stars(r.pred.rounded)}</span> <span class="lbw-muted">${fmt(r.pred.rating)}</span></td>
+                <td class="lbw-num">${rankFor(r.pred.pct)}</td>
+                <td class="lbw-why">${confDot(r.pred.confidence)}${topFacets(r.pred, 2)}</td>`
+                : '<td class="lbw-muted" colspan="3">no public ratings to predict from</td>'}
+              </tr>`).join('')}</tbody></table>` : ''}
           ${state.check ? `<p class="lbw-check" title="Each friend who rated it is predicted as if they hadn't (their rating removed everywhere), then compared with what they actually gave.">Model check on ${state.check.n} friend${state.check.n === 1 ? '' : 's'}: off by <strong>±${fmt(state.check.mae)}★</strong> on average, vs ±${fmt(state.check.baseline)}★ for just guessing their usual average.</p>` : ''}
         </div>
       </div>`;
