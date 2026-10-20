@@ -134,8 +134,9 @@
       let lastPaint = 0;
       const meta = { ...settings, weightedAverage: film.weightedAverage, at: Date.now(), partial: true };
 
+      let lastRaters = [];
       const paint = () => {
-        const raters = entries
+        const raters = lastRaters = entries
           .filter((e) => profiles.get(e.user))
           .map((e) => ({ ...e, counts: profiles.get(e.user).counts, name: e.name || profiles.get(e.user).name }));
         if (!raters.length) return null;
@@ -159,6 +160,12 @@
       if (!result) return;
       ctx.meanZ = result.meanZ;
       ctx.ref = result.ref;
+      // Share a fixed-scale result with the top-films page.
+      const g = stats.analyse(film.counts, lastRaters, { ref: stats.GLOBAL_REF });
+      lb.saveFilmResult(slug, {
+        normalised: g.normalised, normalisedSe: g.normalisedSe, meanZ: g.meanZ, meanPct: g.meanPct,
+        favouriteShare: g.favouriteShare, activityWeighted: g.activityWeighted, sampleSize: g.sampleSize, scale: 'global',
+      });
 
       flagState = { quick: result.flagged, refined: null, pending: 0, checked: 0 };
       filmTab.renderFlags(panes.film, flagState, slug);

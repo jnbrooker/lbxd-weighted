@@ -126,7 +126,8 @@
   function analyse(filmCounts, raters, opts = {}) {
     const zThreshold = opts.zThreshold ?? 2;
     const film = histSummary(filmCounts);
-    const ref = pooledReference(raters.map((r) => r.counts));
+    // opts.ref fixes the scale so scores are comparable across films.
+    const ref = opts.ref || pooledReference(raters.map((r) => r.counts));
 
     const enriched = raters
       .map((r) => {
@@ -145,6 +146,12 @@
     const favouriteShare = weightedMean(sample, (r) => (r.pct >= 0.9 ? 1 : 0), w);
     const dislikeShare = weightedMean(sample, (r) => (r.pct <= 0.1 ? 1 : 0), w);
     const normalised = ref.mean + meanZ * ref.sd;
+    // Standard error of the weighted mean z (Kish effective sample size).
+    const sw = sample.reduce((a, r) => a + r.weight, 0), sw2 = sample.reduce((a, r) => a + r.weight ** 2, 0);
+    const nEff = sw2 ? (sw * sw) / sw2 : 0;
+    const zVar = weightedMean(sample, (r) => (r.z - meanZ) ** 2, w);
+    const zSe = nEff > 1 ? Math.sqrt(zVar / nEff) : NaN;
+    const normalisedSe = zSe * ref.sd;
     const lowActivityShare = weightedMean(
       enriched.filter((r) => r.source === 'sample'),
       (r) => (r.n < 50 ? 1 : 0),
@@ -166,6 +173,8 @@
       meanZ,
       meanPct,
       normalised,
+      normalisedSe,
+      nEff,
       favouriteShare,
       dislikeShare,
       lowActivityShare,
@@ -216,6 +225,10 @@
     country: { w: 0.25, k: 8, label: 'country' },
     decade: { w: 0.2, k: 10, label: 'decade' },
   };
+  // Fixed site-wide scale for comparing films (roughly the pooled mean/sd of
+  // sampled raters across many films).
+  const GLOBAL_REF = { mean: 3.35, sd: 1.0 };
+
   const TASTE_PRIOR = 0.5; // pseudo-weight pulling the combined taste signal toward 0
 
   // Predict how a specific person would rate a film.
@@ -342,10 +355,31 @@
     ].filter((s) => s.n >= 3);
   }
 
+  // Pearson correlation and least-squares line y = a + b·x.
+  function linearFit(xs, ys) {
+    const n = Math.min(xs.length, ys.length);
+    if (n < 3) return { r: NaN, slope: NaN, intercept: NaN, n };
+    let mx = 0, my = 0;
+    for (let i = 0; i < n; i++) { mx += xs[i]; my += ys[i]; }
+    mx /= n; my /= n;
+    let sxy = 0, sxx = 0, syy = 0;
+    for (let i = 0; i < n; i++) { sxy += (xs[i] - mx) * (ys[i] - my); sxx += (xs[i] - mx) ** 2; syy += (ys[i] - my) ** 2; }
+    const slope = sxx ? sxy / sxx : NaN;
+    return { r: sxx && syy ? sxy / Math.sqrt(sxx * syy) : NaN, slope, intercept: my - slope * mx, n };
+  }
+
+  // Shannon entropy of a histogram, as 'effective number of rating levels used'.
+  function levelsUsed(counts) {
+    const n = counts.reduce((a, b) => a + b, 0);
+    if (!n) return 0;
+    const h = counts.reduce((a, c) => (c ? a - (c / n) * Math.log(c / n) : a), 0);
+    return Math.exp(h);
+  }
+
   const api = {
     RATINGS, idxOf, histSummary, median, percentileOf, percentileAt, leaveOneOut, raterBaseline,
     pooledReference, activityWeight, weightedMean, allocateSample, bimodality, analyse,
-    FACETS, personBaseline, affinity, crowdZFromAverage, predictRating, alsoLoved, tasteMatch, tasteFingerprint, segments,
+    FACETS, GLOBAL_REF, personBaseline, affinity, crowdZFromAverage, predictRating, alsoLoved, linearFit, levelsUsed, tasteMatch, tasteFingerprint, segments,
   };
   root.LBW = Object.assign(root.LBW || {}, { stats: api });
   if (typeof module !== 'undefined' && module.exports) module.exports = api;

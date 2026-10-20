@@ -173,3 +173,15 @@ test('percentileAt interpolates between half stars', () => {
   close(s.percentileAt(c, 3.25), 0.375);
   assert.ok(s.percentileAt(c, 4.9) > s.percentileAt(c, 4.6));
 });
+
+test('linearFit recovers a line', () => {
+  const f = s.linearFit([1, 2, 3, 4], [3, 5, 7, 9]);
+  close(f.slope, 2);
+  close(f.intercept, 1);
+  close(f.r, 1);
+});
+
+test('levelsUsed counts effective rating levels', () => {
+  close(s.levelsUsed([0, 0, 0, 0, 0, 0, 0, 0, 0, 7]), 1);
+  close(s.levelsUsed([1, 1, 1, 1, 1, 1, 1, 1, 1, 1]), 10);
+});

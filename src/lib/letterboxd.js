@@ -66,6 +66,7 @@
   // ---------- fetching ----------
 
   const parser = new DOMParser();
+  const netStats = { requests: 0 };
   let active = 0;
   const waiters = [];
   const MAX_CONCURRENT = 6;
@@ -85,6 +86,7 @@
 
   async function fetchDoc(path, { allow404 = false } = {}, attempt = 0) {
     await slot();
+    netStats.requests++;
     let res;
     try {
       res = await fetch(path, { credentials: 'include' });
@@ -126,9 +128,41 @@
     return encodeURIComponent(label);
   };
 
-  async function getFilmHistogram(slug) {
-    const doc = await fetchDoc(`/csi/film/${slug}/rating-histogram/`);
-    return { counts: parseHistogram(doc), weightedAverage: parseWeightedAverage(doc) };
+  async function getFilmHistogram(slug, { fresh = false } = {}) {
+    const load = async () => {
+      const doc = await fetchDoc(`/csi/film/${slug}/rating-histogram/`);
+      return { counts: parseHistogram(doc), weightedAverage: parseWeightedAverage(doc) };
+    };
+    return fresh ? load() : cached(`hist:${slug}`, 3 * DAY, load);
+  }
+
+  // Site-wide film lists (72 per page) with each film's average.
+  // source: 'by/rating' (highest rated) | 'popular' (most popular, all time)
+  function parseBrowserList(doc) {
+    return [...doc.querySelectorAll('li.posteritem')].map((li) => {
+      const item = li.querySelector('[data-item-slug]');
+      return item ? { slug: item.dataset.itemSlug, name: item.dataset.itemName || item.dataset.itemSlug, avg: parseFloat(li.dataset.averageRating) } : null;
+    }).filter(Boolean);
+  }
+  async function getSiteList(source, pages) {
+    return cached(`sitelist:${source}:${pages}`, DAY, async () => {
+      const out = [];
+      for (let p = 1; p <= pages; p++) {
+        const doc = await fetchDoc(`/csi/films/films-browser-list/${source}/${p > 1 ? `page/${p}/` : ''}?esiAllowFilters=true`);
+        const batch = parseBrowserList(doc);
+        out.push(...batch);
+        if (!batch.length) break;
+      }
+      return out;
+    });
+  }
+
+  // Per-film weighted results, shared by film pages and the top-films page.
+  async function getFilmResult(slug) {
+    try { return (await store().get(`res:${slug}`))[`res:${slug}`] || null; } catch (_) { return null; }
+  }
+  async function saveFilmResult(slug, res) {
+    try { await store().set({ [`res:${slug}`]: { ...res, at: Date.now() } }); } catch (_) {}
   }
 
   async function getUsersInBucket(slug, rating) {
@@ -348,10 +382,10 @@
   }
 
   LBW.lb = {
-    GENRES, DECADES,
+    GENRES, DECADES, netStats, fetchDoc,
     parseHistogram, parseWeightedAverage, parseStars, parseRatedUsers, parseReviews, parseProfile,
     detectUsername, parseFilmGenres, parseFollowing, parseGridFilms, parseGridRatings, parseSimilar, parseFacets, parseFilmInfo,
-    getFilmHistogram, getUsersInBucket, getPopularReviews, getProfile,
+    getFilmHistogram, getSiteList, parseBrowserList, getFilmResult, saveFilmResult, getUsersInBucket, getPopularReviews, getProfile,
     getFollowList, getFriends, getUserFilmRating, getSimilar, getFilmInfo, getUserTopRated, getUserBottomRated,
     getUserFacet, getUserBroadProfile, getUserFacetRatings, clearCache, cached, DAY,
   };

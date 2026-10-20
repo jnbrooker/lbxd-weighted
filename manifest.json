@@ -1,10 +1,11 @@
 {
   "manifest_version": 3,
   "name": "Letterboxd Weighted Stats",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Advanced Letterboxd stats: rater-normalised scores, taste-aware out-of-character ratings, friend predictions and recommendations.",
   "permissions": [
-    "storage"
+    "storage",
+    "unlimitedStorage"
   ],
   "host_permissions": [
     "https://letterboxd.com/*"
@@ -12,17 +13,21 @@
   "content_scripts": [
     {
       "matches": [
-        "https://letterboxd.com/film/*"
+        "https://letterboxd.com/*"
       ],
       "js": [
         "src/lib/stats.js",
         "src/lib/letterboxd.js",
         "src/lib/recommend.js",
+        "src/lib/profile-stats.js",
         "src/ui/util.js",
         "src/ui/film-tab.js",
         "src/ui/friends-tab.js",
         "src/ui/foryou-tab.js",
-        "src/content.js"
+        "src/ui/top-page.js",
+        "src/ui/profile-page.js",
+        "src/content.js",
+        "src/site.js"
       ],
       "css": [
         "src/panel.css"
