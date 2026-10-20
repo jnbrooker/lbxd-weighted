@@ -175,3 +175,4 @@
 .lbw-recs-list.-avoid .lbw-stars { color: var(--lbw-down); }
 .lbw-delta { color: var(--lbw-up); font-weight: 600; font-variant-numeric: tabular-nums; }
 .lbw-chip.-source.-warn { background: rgba(224, 115, 13, 0.16); }
+.lbw-delta.-down { color: var(--lbw-down); }

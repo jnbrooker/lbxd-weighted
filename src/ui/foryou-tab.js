@@ -24,10 +24,12 @@
 
   // One film row. variant: 'rec' | 'gem' | 'avoid'.
   function filmItem(c, whoName, variant, matchR) {
-    const score = variant === 'gem'
+    const score = variant === 'avoid'
+      ? `<span class="lbw-stars">${stars(c.pred.rounded)}</span> <strong>${fmt(c.pred.rating)}</strong> <span class="lbw-muted">vs LB ${fmt(c.info.avg)} · ${rankFor(c.pred.pct)}</span> <span class="lbw-delta -down">${signed(c.aboveAvg, 1)}★</span>`
+      : variant === 'gem'
       ? `<span class="lbw-stars">${stars(c.pred.rounded)}</span> <strong>${fmt(c.pred.rating)}</strong> <span class="lbw-muted">vs LB ${fmt(c.info.avg)}</span> <span class="lbw-delta">${signed(c.aboveAvg, 1)}★</span>`
       : `<span class="lbw-stars">${stars(c.pred.rounded)}</span> <strong>${fmt(c.pred.rating)}</strong> <span class="lbw-muted">${rankFor(c.pred.pct)} for ${esc(whoName)}</span>`;
-    const meta = variant === 'gem' ? esc(c.info.director || '') : `${esc(c.info.director || '')} · LB ${fmt(c.info.avg)}`;
+    const meta = variant !== 'rec' ? esc(c.info.director || '') : `${esc(c.info.director || '')} · LB ${fmt(c.info.avg)}`;
     return `<li>
       <div class="lbw-rec-head">
         <a class="lbw-user" href="/film/${esc(c.slug)}/">${esc(c.info.name)}</a>
@@ -93,7 +95,7 @@
           </div>
           <div>
             <h3 class="lbw-sub-h">Don't recommend</h3>
-            <p class="lbw-muted lbw-col-note">Likely to sit low among their own ratings, whatever the crowd thinks.</p>
+            <p class="lbw-muted lbw-col-note">Likely to land low among their own ratings and below the Letterboxd average, furthest below the crowd first.</p>
             ${r.avoid.length ? filmList(r.avoid, 6, whoName, 'avoid', matchR, '-compact -avoid') : '<p class="lbw-muted">No obvious misses among the films checked.</p>'}
           </div>
         </div>

@@ -140,7 +140,8 @@
     unseen.forEach((c) => { c.aboveAvg = aboveAvg(c); });
     const items = unseen.slice().sort((a, b) => b.pred.pct - a.pred.pct || b.pred.rating - a.pred.rating).filter((c) => c.pred.pct >= 0.5);
     const gems = unseen.filter((c) => c.aboveAvg >= 0.25).sort((a, b) => b.aboveAvg - a.aboveAvg);
-    const avoid = unseen.filter((c) => c.pred.pct <= 0.4).sort((a, b) => a.pred.pct - b.pred.pct || a.pred.rating - b.pred.rating);
+    // Warnings: low for them AND below the consensus, most-tempting (furthest below the crowd) first.
+    const avoid = unseen.filter((c) => c.pred.pct <= 0.4 && c.aboveAvg < 0).sort((a, b) => a.aboveAvg - b.aboveAvg || a.pred.pct - b.pred.pct);
 
     return {
       target,
