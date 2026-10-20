@@ -166,3 +166,12 @@
 .lbw-rec-score { margin-left: auto; white-space: nowrap; font-size: 12px; }
 .lbw-rec-score strong { color: #fff; }
 .lbw-fineprint { margin-top: 10px; font-size: 11px; }
+
+/* for a friend: gems + warnings */
+.lbw-foryou-cols { margin-top: 18px; }
+.lbw-col-note { margin: -2px 0 6px; font-size: 11px; }
+.lbw-recs-list.-compact li { padding-top: 6px; padding-bottom: 6px; }
+.lbw-recs-list.-compact .lbw-rec-score { margin-left: 0; width: 100%; }
+.lbw-recs-list.-avoid .lbw-stars { color: var(--lbw-down); }
+.lbw-delta { color: var(--lbw-up); font-weight: 600; font-variant-numeric: tabular-nums; }
+.lbw-chip.-source.-warn { background: rgba(224, 115, 13, 0.16); }

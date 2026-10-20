@@ -9,16 +9,37 @@
     fans: (s) => `fans of ${s.label} love it`,
     similarThis: (s) => `similar to ${s.label}`,
     thisFilm: () => 'this film',
+    disliked: (s) => `like ${s.label}, which they gave ${stars(s.rating)}`,
   };
 
-  function sourceChips(c) {
+  function sourceChips(c, matchR) {
     const loved = c.sources.filter((s) => s.type === 'loved');
     const rest = c.sources.filter((s) => s.type !== 'loved');
     const chips = [];
-    if (loved.length) chips.push(`because they loved ${loved.slice(0, 2).map((s) => s.label).join(' & ')}${loved.length > 2 ? ` +${loved.length - 2}` : ''}`);
-    rest.forEach((s) => chips.push(SOURCE_TEXT[s.type](s)));
-    return chips.map((t) => `<span class="lbw-chip -source">${esc(t)}</span>`).join('');
+    if (loved.length) chips.push([`because they loved ${loved.slice(0, 2).map((s) => s.label).join(' & ')}${loved.length > 2 ? ` +${loved.length - 2}` : ''}`, '']);
+    // Warning tint: similar to something they hated, or your favourite when your tastes clash.
+    rest.forEach((s) => chips.push([SOURCE_TEXT[s.type](s), s.type === 'disliked' || (s.type === 'you' && matchR < 0) ? '-warn' : '']));
+    return chips.map(([t, cls]) => `<span class="lbw-chip -source ${cls}">${esc(t)}</span>`).join('');
   }
+
+  // One film row. variant: 'rec' | 'gem' | 'avoid'.
+  function filmItem(c, whoName, variant, matchR) {
+    const score = variant === 'gem'
+      ? `<span class="lbw-stars">${stars(c.pred.rounded)}</span> <strong>${fmt(c.pred.rating)}</strong> <span class="lbw-muted">vs LB ${fmt(c.info.avg)}</span> <span class="lbw-delta">${signed(c.aboveAvg, 1)}★</span>`
+      : `<span class="lbw-stars">${stars(c.pred.rounded)}</span> <strong>${fmt(c.pred.rating)}</strong> <span class="lbw-muted">${rankFor(c.pred.pct)} for ${esc(whoName)}</span>`;
+    const meta = variant === 'gem' ? esc(c.info.director || '') : `${esc(c.info.director || '')} · LB ${fmt(c.info.avg)}`;
+    return `<li>
+      <div class="lbw-rec-head">
+        <a class="lbw-user" href="/film/${esc(c.slug)}/">${esc(c.info.name)}</a>
+        <span class="lbw-muted">${meta}</span>
+        <span class="lbw-rec-score">${confDot(c.pred.confidence)}${score}</span>
+      </div>
+      <div class="lbw-chips">${sourceChips(c, matchR)}${topFacets(c.pred, 3)}</div>
+    </li>`;
+  }
+
+  const filmList = (list, n, whoName, variant, matchR, cls = '') =>
+    `<ol class="lbw-recs-list ${cls}">${list.slice(0, n).map((c) => filmItem(c, whoName, variant, matchR)).join('')}</ol>`;
 
   function fingerprint(list, label) {
     const liked = list.filter((g) => g.shrunk > 0.1).slice(0, 4);
@@ -54,6 +75,7 @@
       const r = state.result;
       const who = state.people.find((p) => p.user === r.target);
       const whoName = who?.isMe ? 'you' : who?.name || r.target;
+      const matchR = r.match ? r.match.r : 0;
       bodyHtml = `
         <div class="lbw-person">
           <div><strong>${esc(who?.isMe ? 'You' : whoName)}</strong> <span class="lbw-muted">· ${r.profile.n.toLocaleString()} ratings · average ${fmt(r.profile.mean)}</span>
@@ -61,15 +83,21 @@
           ${fingerprint(r.genres, 'Genres')}
           ${fingerprint(r.decades, 'Decades')}
         </div>
-        ${r.items.length ? `<ol class="lbw-recs-list">${r.items.slice(0, 12).map((c) => `<li>
-          <div class="lbw-rec-head">
-            <a class="lbw-user" href="/film/${esc(c.slug)}/">${esc(c.info.name)}</a>
-            <span class="lbw-muted">${esc(c.info.director || '')} · LB ${fmt(c.info.avg)}</span>
-            <span class="lbw-rec-score">${confDot(c.pred.confidence)}<span class="lbw-stars">${stars(c.pred.rounded)}</span> <strong>${fmt(c.pred.rating)}</strong> <span class="lbw-muted">${rankFor(c.pred.pct)} for ${esc(whoName)}</span></span>
+        <h3 class="lbw-sub-h">Recommend</h3>
+        ${r.items.length ? filmList(r.items, 12, whoName, 'rec', matchR) : '<p class="lbw-muted">No unseen candidates look likely to land in their top half.</p>'}
+        <div class="lbw-flag-cols -wide lbw-foryou-cols">
+          <div>
+            <h3 class="lbw-sub-h">They'd rate way above average</h3>
+            <p class="lbw-muted lbw-col-note">Predicted well above the Letterboxd average, so their taste rather than the film's reputation is doing the work.</p>
+            ${r.gems.length ? filmList(r.gems, 6, whoName, 'gem', matchR, '-compact') : '<p class="lbw-muted">Nothing found clearly above the consensus for them.</p>'}
           </div>
-          <div class="lbw-chips">${sourceChips(c)}${topFacets(c.pred, 3)}</div>
-        </li>`).join('')}</ol>` : '<p class="lbw-muted">No unseen candidates found — they may have seen everything nearby!</p>'}
-        <p class="lbw-muted lbw-fineprint">Candidates come from films similar to their 4½–5★ favourites, your own favourites (weighted by taste match), this film and its similar films, and what this film's fans also love. Each is scored against their genre, decade, director, theme, language and cast history plus the film's Letterboxd average, and ranked by where it would land among their own ratings.</p>`;
+          <div>
+            <h3 class="lbw-sub-h">Don't recommend</h3>
+            <p class="lbw-muted lbw-col-note">Likely to sit low among their own ratings, whatever the crowd thinks.</p>
+            ${r.avoid.length ? filmList(r.avoid, 6, whoName, 'avoid', matchR, '-compact -avoid') : '<p class="lbw-muted">No obvious misses among the films checked.</p>'}
+          </div>
+        </div>
+        <p class="lbw-muted lbw-fineprint">Candidates come from films similar to their 4½–5★ favourites (and, for the warnings, their lowest-rated films), your own favourites (weighted by taste match), this film and its similar films, and what this film's fans also love. Each is scored against their genre, decade, director, theme, language and cast history plus the film's Letterboxd average, and ranked by where it would land among their own ratings.</p>`;
     }
     el.innerHTML = controls(state) + bodyHtml;
   }

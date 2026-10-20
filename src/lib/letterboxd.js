@@ -288,6 +288,11 @@
     return cached(`top:${user}`, 2 * DAY, async () => parseGridRatings(await fetchDoc(`/${user}/films/by/entry-rating/`)));
   }
 
+  // Their lowest-rated films (first page, up to 72).
+  async function getUserBottomRated(user) {
+    return cached(`bottom:${user}`, 2 * DAY, async () => parseGridRatings(await fetchDoc(`/${user}/films/by/entry-rating-lowest/`)));
+  }
+
   // First page (72 most recent) of a user's films matching a facet path, rated or
   // not, so it doubles as a partial "already seen" list.
   async function getUserFacet(user, path) {
@@ -347,7 +352,7 @@
     parseHistogram, parseWeightedAverage, parseStars, parseRatedUsers, parseReviews, parseProfile,
     detectUsername, parseFilmGenres, parseFollowing, parseGridFilms, parseGridRatings, parseSimilar, parseFacets, parseFilmInfo,
     getFilmHistogram, getUsersInBucket, getPopularReviews, getProfile,
-    getFollowList, getFriends, getUserFilmRating, getSimilar, getFilmInfo, getUserTopRated,
+    getFollowList, getFriends, getUserFilmRating, getSimilar, getFilmInfo, getUserTopRated, getUserBottomRated,
     getUserFacet, getUserBroadProfile, getUserFacetRatings, clearCache, cached, DAY,
   };
 })(globalThis);

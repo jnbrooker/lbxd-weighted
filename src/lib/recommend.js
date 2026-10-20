@@ -4,7 +4,7 @@
   const LBW = root.LBW;
   const { stats, lb } = LBW;
 
-  const SOURCE_PRIOR = { loved: 1, you: 0.6, fans: 0.9, similarThis: 0.7, thisFilm: 1.2 };
+  const SOURCE_PRIOR = { loved: 1, you: 0.6, fans: 0.9, similarThis: 0.7, thisFilm: 1.2, disliked: 1 };
   const DEFAULT_REF = { mean: 3.35, sd: 0.95 };
 
   const ratedMap = (lists) => {
@@ -20,16 +20,17 @@
     const tick = (n = 1) => { done += n; onProgress(done, total); };
     const grow = (n) => { total += n; onProgress(done, total); };
 
-    // 1. Who they are: histogram, broad genre/decade profile, favourites.
-    grow(32);
-    const [profile, broad, top] = await Promise.all([
+    // 1. Who they are: histogram, broad genre/decade profile, favourites, least favourites.
+    grow(33);
+    const [profile, broad, top, bottom] = await Promise.all([
       lb.getProfile(target, 14).finally(() => tick()),
       lb.getUserBroadProfile(target, () => tick()),
       lb.getUserTopRated(target).catch(() => []).finally(() => tick()),
+      lb.getUserBottomRated(target).catch(() => []).finally(() => tick()),
     ]);
     if (!profile) throw new Error(`Couldn't read ${target}'s ratings (private or no ratings?)`);
     const base = stats.personBaseline(profile.counts, ref);
-    const seen = new Set([...Object.values(broad).flat().map((f) => f.slug), ...top.map((f) => f.slug)]);
+    const seen = new Set([...Object.values(broad).flat().map((f) => f.slug), ...top.map((f) => f.slug), ...bottom.map((f) => f.slug)]);
 
     // Taste fingerprint from the broad profile.
     const genreLists = {}, decadeLists = {};
@@ -74,8 +75,18 @@
     (ctx.similar || []).slice(0, 12).forEach((s) => add(s.slug, s.name, { type: 'similarThis', label: ctx.filmName }));
     (ctx.alsoLoved || []).slice(0, 10).forEach((s) => add(s.slug, s.name, { type: 'fans', label: ctx.filmName }));
 
+    // Negative candidates: films like the ones they rated lowest.
+    const pct = (r) => stats.percentileOf(profile.counts, r);
+    const dislikes = bottom.filter((f) => f.rating <= 2.5 && pct(f.rating) <= 0.15).slice(0, 5);
+    grow(dislikes.length);
+    const badSims = await Promise.all(dislikes.map((f) => lb.getSimilar(f.slug, 12).catch(() => []).finally(() => tick())));
+    dislikes.forEach((f, i) => badSims[i].forEach((s) => add(s.slug, s.name, { type: 'disliked', label: f.name, rating: f.rating })));
+
     const prelim = (c) => c.sources.reduce((s, src) => s + (SOURCE_PRIOR[src.type] || 0.5) + (src.type === 'you' && match ? Math.max(0, match.r) : 0), 0);
-    const pool = [...cands.values()].sort((a, b) => prelim(b) - prelim(a)).slice(0, 30);
+    const ranked = [...cands.values()].sort((a, b) => prelim(b) - prelim(a));
+    const positive = ranked.filter((c) => c.sources.some((s) => s.type !== 'disliked')).slice(0, 30);
+    const negative = ranked.filter((c) => c.sources.some((s) => s.type === 'disliked') && !positive.includes(c)).slice(0, 15);
+    const pool = [...positive, ...negative];
 
     // 4. Film details, then a cheap score from the broad profile.
     grow(pool.length);
@@ -85,8 +96,10 @@
     }));
     const boostOf = (c) => {
       const loved = c.sources.filter((s) => s.type === 'loved').length;
-      let b = Math.min(0.3, 0.12 * loved);
-      if (c.sources.some((s) => s.type === 'you') && match) b += 0.35 * Math.max(0, match.r);
+      const disliked = c.sources.filter((s) => s.type === 'disliked').length;
+      let b = Math.min(0.3, 0.12 * loved) - Math.min(0.3, 0.12 * disliked);
+      // Your love counts for them in proportion to taste match — against them if your tastes clash.
+      if (c.sources.some((s) => s.type === 'you') && match) b += 0.35 * match.r;
       if (c.sources.some((s) => s.type === 'fans')) b += 0.1;
       return b;
     };
@@ -104,8 +117,14 @@
     scored.forEach((c) => score(c));
     scored.sort((a, b) => b.pred.pct - a.pred.pct || b.pred.rating - a.pred.rating);
 
-    // 5. Refine the front-runners with specific facets + a definite seen check.
-    const finalists = scored.slice(0, 18);
+    // 5. Refine the contenders for each list with specific facets + a definite seen check:
+    //    best overall, furthest above the Letterboxd average, and likeliest to disappoint.
+    const aboveAvg = (c) => c.pred.rating - c.info.avg;
+    const finalists = [...new Set([
+      ...scored.slice(0, 18),
+      ...scored.slice().sort((a, b) => aboveAvg(b) - aboveAvg(a)).slice(0, 10),
+      ...scored.slice(-12),
+    ])];
     grow(finalists.length * 2);
     await Promise.all(finalists.map(async (c) => {
       const specific = c.info.facets.filter((f) => ['director', 'theme', 'language'].includes(f.type) || (f.type === 'actor' && f === c.info.facets.find((x) => x.type === 'actor')));
@@ -117,8 +136,11 @@
       if (!c.seen) score(c, extra);
     }));
 
-    const items = finalists.filter((c) => !c.seen && c.pred)
-      .sort((a, b) => b.pred.pct - a.pred.pct || b.pred.rating - a.pred.rating);
+    const unseen = finalists.filter((c) => !c.seen && c.pred);
+    unseen.forEach((c) => { c.aboveAvg = aboveAvg(c); });
+    const items = unseen.slice().sort((a, b) => b.pred.pct - a.pred.pct || b.pred.rating - a.pred.rating).filter((c) => c.pred.pct >= 0.5);
+    const gems = unseen.filter((c) => c.aboveAvg >= 0.25).sort((a, b) => b.aboveAvg - a.aboveAvg);
+    const avoid = unseen.filter((c) => c.pred.pct <= 0.4).sort((a, b) => a.pred.pct - b.pred.pct || a.pred.rating - b.pred.rating);
 
     return {
       target,
@@ -127,6 +149,8 @@
       decades: decadesFp,
       match,
       items,
+      gems,
+      avoid,
     };
   }
 
