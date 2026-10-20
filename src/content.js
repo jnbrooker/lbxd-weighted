@@ -9,7 +9,7 @@
 
   const DEFAULTS = {
     sampleSize: 300, zThreshold: 1.75, reviewPages: 2, profileTtlDays: 14, autoRun: true,
-    username: '', friends: true, maxFriends: 500, friendBatch: 40, tasteChecks: 15,
+    username: '', friends: true, friendBatch: 40, tasteChecks: 15,
   };
 
   const filmName = (document.querySelector('meta[property="og:title"]')?.content || slug).replace(/\s*\(\d{4}\)\s*$/, '');
@@ -233,7 +233,7 @@
   async function loadFriendList() {
     if (friendList) return friendList;
     friendList = (async () => {
-      const list = await lb.getFriends(me, settings.maxFriends).catch((e) => { console.warn('[lbxd-weighted] friends', e); return []; });
+      const list = await lb.getFriends(me).catch((e) => { console.warn('[lbxd-weighted] friends', e); return []; });
       return [{ user: me, name: 'You', isMe: true, mutual: false }, ...list.filter((f) => f.user !== me)];
     })();
     return friendList;

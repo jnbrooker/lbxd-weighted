@@ -90,7 +90,7 @@ for 2 days. The sample is seeded per film, so revisits reuse the cache. **Resamp
 4. Open any film page, e.g. <https://letterboxd.com/film/past-lives/>.
 
 Click the toolbar icon to open the options: sample size, flag threshold, review pages, username,
-number of friends, batch size, taste checks, cache length, auto-run, and clear cache.
+batch size, taste checks, cache length, auto-run, and clear cache.
 
 ## Development
 

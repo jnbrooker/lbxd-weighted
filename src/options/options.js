@@ -1,6 +1,6 @@
 const DEFAULTS = {
   sampleSize: 300, zThreshold: 1.75, reviewPages: 2, profileTtlDays: 14, autoRun: true,
-  username: '', friends: true, maxFriends: 500, friendBatch: 40, tasteChecks: 15,
+  username: '', friends: true, friendBatch: 40, tasteChecks: 15,
 };
 const $ = (id) => document.getElementById(id);
 const flash = (msg) => { $('status').textContent = msg; setTimeout(() => ($('status').textContent = ''), 1800); };
@@ -19,6 +19,7 @@ $('save').addEventListener('click', async () => {
     out[k] = t === 'boolean' ? $(k).checked : t === 'string' ? $(k).value.trim().replace(/^@/, '') : (Number.isFinite(parseFloat($(k).value)) ? parseFloat($(k).value) : DEFAULTS[k]);
   }
   await chrome.storage.sync.set(out);
+  await chrome.storage.sync.remove('maxFriends'); // retired: everyone you follow is always listed
   flash('Saved');
 });
 

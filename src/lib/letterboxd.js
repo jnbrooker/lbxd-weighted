@@ -330,11 +330,11 @@
     return out;
   }
 
-  // Everyone the user follows, with mutuals (they follow back) first.
-  async function getFriends(user, maxFriends) {
+  // Everyone the user follows (up to 3,000), with mutuals (they follow back) first.
+  async function getFriends(user) {
     const [following, followers] = await Promise.all([
-      getFollowList(user, 'following', maxFriends),
-      getFollowList(user, 'followers', 500).catch(() => []),
+      getFollowList(user, 'following', 3000),
+      getFollowList(user, 'followers', 2000).catch(() => []),
     ]);
     const back = new Set(followers.map((f) => f.user));
     return following
